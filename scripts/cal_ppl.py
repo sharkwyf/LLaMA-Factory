@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import sys; sys.path.append('./src/')
+
 import json
 from dataclasses import dataclass
 from typing import Any, Dict, Literal, Optional, Sequence

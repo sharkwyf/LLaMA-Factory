@@ -147,6 +147,7 @@ def get_dataset(
     stage: Literal["pt", "sft", "rm", "ppo", "kto"],
     tokenizer: "PreTrainedTokenizer",
     processor: Optional["ProcessorMixin"] = None,
+    remove_origin_columns: bool = True,
 ) -> Union["Dataset", "IterableDataset"]:
     template = get_template_and_fix_tokenizer(tokenizer, data_args.template)
     if data_args.train_on_prompt and template.efficient_eos:
@@ -179,7 +180,10 @@ def get_dataset(
         preprocess_func, print_function = get_preprocess_and_print_func(
             data_args, training_args, stage, template, tokenizer, processor
         )
-        column_names = list(next(iter(dataset)).keys())
+        if remove_origin_columns:
+            column_names = list(next(iter(dataset)).keys())
+        else:
+            column_names = []
         kwargs = {}
         if not data_args.streaming:
             kwargs = dict(
@@ -187,7 +191,6 @@ def get_dataset(
                 load_from_cache_file=(not data_args.overwrite_cache) or (training_args.local_process_index != 0),
                 desc="Running tokenizer on dataset",
             )
-
         dataset = dataset.map(preprocess_func, batched=True, remove_columns=column_names, **kwargs)
 
         if data_args.tokenized_path is not None:

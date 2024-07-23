@@ -1,0 +1,75 @@
+NAME
+    alpaca_eval evaluate - Evaluate a model based on its outputs. This is the default entrypoint if no command is specified.
+
+SYNOPSIS
+    alpaca_eval evaluate <flags>
+
+DESCRIPTION
+    Evaluate a model based on its outputs. This is the default entrypoint if no command is specified.
+
+FLAGS
+    --model_outputs=MODEL_OUTPUTS
+        Type: Optional[Union]
+        Default: None
+        The outputs of the model to add to the leaderboard. Accepts data (list of dictionary, pd.dataframe, datasets.Dataset) or a path to read those (json, csv, tsv) or a function to generate those. Each dictionary (or row of dataframe) should contain the keys that are formatted in the prompts. E.g. by default `instruction` and `output` with optional `input`. If None, we just print the leaderboard.
+    -r, --reference_outputs=REFERENCE_OUTPUTS
+        Type: Union
+        Default: <func...
+        The outputs of the reference model. Same format as `model_outputs`. If None, the reference outputs are a specific set of Davinci 003 outputs on the AlpacaEval set:
+    --annotators_config=ANNOTATORS_CONFIG
+        Type: Union
+        Default: 'alpaca_eval_gpt4_turbo_fn'
+        The path the (or list of dict of) the annotator's config file. For details see the docstring of `PairwiseAnnotator`.
+    -n, --name=NAME
+        Type: Optional[Optional]
+        Default: None
+        The name of the model to add to the leaderboard. If None we check if `generator is in model_outputs` if not we use "Current model".
+    -o, --output_path=OUTPUT_PATH
+        Type: Union
+        Default: 'auto'
+        Path to the directory where the new leaderboard and the annotations should be stored. If None we don't save. If `auto` we use `model_outputs` if it is a path, and otherwise use the directory from which we call the script.
+    -p, --precomputed_leaderboard=PRECOMPUTED_LEADERBOARD
+        Type: Union
+        Default: 'auto'
+        The precomputed leaderboard or a path to it (json, csv, or tsv). The leaderboard should contain at least the column `win_rate`. If `auto` we will try to use the corresponding leaderboard for the reference outputs (only if in CORRESPONDING_OUTPUTS_LEADERBOARDS). If `None` we won't add other models from the leaderboard.
+    --is_overwrite_leaderboard=IS_OVERWRITE_LEADERBOARD
+        Type: bool
+        Default: False
+        Whether to overwrite the leaderboard if the model is already in it.
+    -l, --leaderboard_mode_to_print=LEADERBOARD_MODE_TO_PRINT
+        Type: Optional
+        Default: 'minimal'
+        The mode of the leaderboard to use. Only used if the precomputed leaderboard has a column `mode`, in which case it will filter the leaderboard by this mode. If None keeps all.
+    -c, --current_leaderboard_mode=CURRENT_LEADERBOARD_MODE
+        Type: str
+        Default: 'community'
+        The mode of the leaderboard for the current method.
+    --is_return_instead_of_print=IS_RETURN_INSTEAD_OF_PRINT
+        Type: bool
+        Default: False
+        Whether to return the metrics instead of printing the results.
+    -f, --fn_metric=FN_METRIC
+        Type: Union
+        Default: 'pairwise_to_winrate'
+        The function or function name in `metrics.py` that will be used to convert preference to metrics. The function should take a sequence of preferences (0 for draw, 1 for base win, 2 when the model to compare wins) and return a dictionary of metrics and the key by which to sort the leaderboard.
+    -s, --sort_by=SORT_BY
+        Type: str
+        Default: 'win_rate'
+        The key by which to sort the leaderboard.
+    --is_cache_leaderboard=IS_CACHE_LEADERBOARD
+        Type: Optional[Optional]
+        Default: None
+        Whether to save the result leaderboard to `precomputed_leaderboard`. If None we save only if max_instances not None. A preferred way of adding models to the leaderboard is to set `precomputed_leaderboard` to the previously saved leaderboard at `<output_path>/leaderboard.csv`.
+    --max_instances=MAX_INSTANCES
+        Type: Optional[Optional]
+        Default: None
+        The maximum number of instances to annotate. Useful for testing.
+    --annotation_kwargs=ANNOTATION_KWARGS
+        Type: Optional[Optional]
+        Default: None
+        Additional arguments to pass to `PairwiseAnnotator.annotate_head2head`.
+    -A, --Annotator=ANNOTATOR
+        Default: <class 'alpaca_eval.annotators.pairwise_evaluator.PairwiseAn...
+        The annotator class to use.
+    Additional flags are accepted.
+        Additional arguments to pass to `PairwiseAnnotator`.

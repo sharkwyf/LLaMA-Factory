@@ -163,3 +163,11 @@ cython_debug/
 user.config
 saves/
 cache/
+wandb/
+output/
+.deepspeed_env
+.vscode/
+*.png
+*.npy
+*.pt
+*.json

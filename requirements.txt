@@ -18,3 +18,4 @@ matplotlib>=3.7.0
 fire
 packaging
 pyyaml
+vllm

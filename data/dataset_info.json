@@ -561,5 +561,197 @@
       "prompt": "content"
     },
     "folder": "python"
+  },
+  "hh_rlhf_all": {
+    "script_url": "custom_dataset/hh_rlhf.py",
+    "subset": "all",
+    "columns": {
+      "prompt": "instruction",
+      "query": "input",
+      "chosen": "chosen",
+      "rejected": "rejected",
+      "history": "history"
+    },
+    "ranking": true
+  },
+  "hh_rlhf_helpful": {
+    "script_url": "custom_dataset/hh_rlhf.py",
+    "subset": "helpful",
+    "columns": {
+      "prompt": "instruction",
+      "query": "input",
+      "chosen": "chosen",
+      "rejected": "rejected",
+      "history": "history"
+    },
+    "ranking": true
+  },
+  "hh_rlhf_harmless": {
+    "script_url": "custom_dataset/hh_rlhf.py",
+    "subset": "harmless",
+    "columns": {
+      "prompt": "instruction",
+      "query": "input",
+      "chosen": "chosen",
+      "rejected": "rejected",
+      "history": "history"
+    },
+    "ranking": true
+  },
+  "adversarial-raw": {
+    "script_url": "adversarial_dataset/adversarial_dataset.py",
+    "subset": "adversarial-raw",
+    "columns": {
+      "prompt": "instruction",
+      "query": "input",
+      "chosen": "chosen",
+      "rejected": "rejected",
+      "history": "history"
+    },
+    "ranking": true
+  },
+  "adversarial-1-attacker": {
+    "script_url": "adversarial_dataset/adversarial_dataset.py",
+    "subset": "adversarial-1-attacker",
+    "columns": {
+      "prompt": "instruction",
+      "query": "input",
+      "chosen": "chosen",
+      "rejected": "rejected",
+      "history": "history"
+    },
+    "ranking": true
+  },
+  "adversarial-1-defender": {
+    "script_url": "adversarial_dataset/adversarial_dataset.py",
+    "subset": "adversarial-1-defender",
+    "columns": {
+      "prompt": "instruction",
+      "query": "input",
+      "chosen": "chosen",
+      "rejected": "rejected",
+      "history": "history"
+    },
+    "ranking": true
+  },
+  "adversarial-1-defender-mixed": {
+    "script_url": "adversarial_dataset/adversarial_dataset.py",
+    "subset": "adversarial-1-defender-mixed",
+    "columns": {
+      "prompt": "instruction",
+      "query": "input",
+      "chosen": "chosen",
+      "rejected": "rejected",
+      "history": "history"
+    },
+    "ranking": true
+  },
+  "adversarial-2-attacker": {
+    "script_url": "adversarial_dataset/adversarial_dataset.py",
+    "subset": "adversarial-2-attacker",
+    "columns": {
+      "prompt": "instruction",
+      "query": "input",
+      "chosen": "chosen",
+      "rejected": "rejected",
+      "history": "history"
+    },
+    "ranking": true
+  },
+  "adversarial-2-defender": {
+    "script_url": "adversarial_dataset/adversarial_dataset.py",
+    "subset": "adversarial-2-defender",
+    "columns": {
+      "prompt": "instruction",
+      "query": "input",
+      "chosen": "chosen",
+      "rejected": "rejected",
+      "history": "history"
+    },
+    "ranking": true
+  },
+  "adversarial-2-defender-mixed": {
+    "script_url": "adversarial_dataset/adversarial_dataset.py",
+    "subset": "adversarial-2-defender-mixed",
+    "columns": {
+      "prompt": "instruction",
+      "query": "input",
+      "chosen": "chosen",
+      "rejected": "rejected",
+      "history": "history"
+    },
+    "ranking": true
+  },
+  "adversarial-3-attacker": {
+    "script_url": "adversarial_dataset/adversarial_dataset.py",
+    "subset": "adversarial-3-attacker",
+    "columns": {
+      "prompt": "instruction",
+      "query": "input",
+      "chosen": "chosen",
+      "rejected": "rejected",
+      "history": "history"
+    },
+    "ranking": true
+  },
+  "adversarial-3-defender": {
+    "script_url": "adversarial_dataset/adversarial_dataset.py",
+    "subset": "adversarial-3-defender",
+    "columns": {
+      "prompt": "instruction",
+      "query": "input",
+      "chosen": "chosen",
+      "rejected": "rejected",
+      "history": "history"
+    },
+    "ranking": true
+  },
+  "adversarial-3-defender-mixed": {
+    "script_url": "adversarial_dataset/adversarial_dataset.py",
+    "subset": "adversarial-3-defender-mixed",
+    "columns": {
+      "prompt": "instruction",
+      "query": "input",
+      "chosen": "chosen",
+      "rejected": "rejected",
+      "history": "history"
+    },
+    "ranking": true
+  },
+  "adversarial-4-attacker": {
+    "script_url": "adversarial_dataset/adversarial_dataset.py",
+    "subset": "adversarial-4-attacker",
+    "columns": {
+      "prompt": "instruction",
+      "query": "input",
+      "chosen": "chosen",
+      "rejected": "rejected",
+      "history": "history"
+    },
+    "ranking": true
+  },
+  "adversarial-4-defender": {
+    "script_url": "adversarial_dataset/adversarial_dataset.py",
+    "subset": "adversarial-4-defender",
+    "columns": {
+      "prompt": "instruction",
+      "query": "input",
+      "chosen": "chosen",
+      "rejected": "rejected",
+      "history": "history"
+    },
+    "ranking": true
+  },
+  "adversarial-4-defender-mixed": {
+    "script_url": "adversarial_dataset/adversarial_dataset.py",
+    "subset": "adversarial-4-defender-mixed",
+    "columns": {
+      "prompt": "instruction",
+      "query": "input",
+      "chosen": "chosen",
+      "rejected": "rejected",
+      "history": "history"
+    },
+    "ranking": true
   }
 }
