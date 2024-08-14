@@ -17,64 +17,47 @@ from functools import partial
 from datasets import load_dataset, concatenate_datasets
 from typing import List
 
+prefix_path = "data/adversarial_dataset/exp"
+
 @dataclass(kw_only=True)
 class ScriptArguments:
     data_path: List[str] = field(default_factory=lambda: [
         # attacker
-        "data/adversarial_dataset/exp/eval/prompt-base",
-        "data/adversarial_dataset/exp/eval/prompt-iterate-1",
-        "data/adversarial_dataset/exp/eval/prompt-iterate-2",
-        "data/adversarial_dataset/exp/eval/prompt-iterate-3",
-        "data/adversarial_dataset/exp/eval/prompt-iterate-4",
+        f"{prefix_path}/eval/prompt-base",
+        f"{prefix_path}/eval/prompt-iterate-1",
+        f"{prefix_path}/eval/prompt-iterate-2",
+        f"{prefix_path}/eval/prompt-iterate-3",
+        f"{prefix_path}/eval/prompt-iterate-4",
         
         "section_line",
 
         # baseline
-        "data/adversarial_dataset/exp/eval/response-mistral",
-        "data/adversarial_dataset/exp/eval/response-base-baseline",
-        "data/adversarial_dataset/exp/eval/response-adversarial-1-baseline",
-        "data/adversarial_dataset/exp/eval/response-adversarial-2-baseline",
-        "data/adversarial_dataset/exp/eval/response-adversarial-3-baseline",
-        "data/adversarial_dataset/exp/eval/response-adversarial-4-baseline",
+        f"{prefix_path}/eval/response-mistral",
+        f"{prefix_path}/eval/response-base-baseline",
+        f"{prefix_path}/eval/response-adversarial-1-baseline",
+        f"{prefix_path}/eval/response-adversarial-2-baseline",
+        f"{prefix_path}/eval/response-adversarial-3-baseline",
+        f"{prefix_path}/eval/response-adversarial-4-baseline",
         
         "section_line",
 
         # defender
-        "data/adversarial_dataset/exp/eval/response-mistral",
-        "data/adversarial_dataset/exp/eval/response-base-defender",
-        "data/adversarial_dataset/exp/eval/response-adversarial-1-defender",
-        "data/adversarial_dataset/exp/eval/response-adversarial-2-defender",
-        "data/adversarial_dataset/exp/eval/response-adversarial-3-defender",
-        "data/adversarial_dataset/exp/eval/response-adversarial-4-defender",
-
-        # # old
-        # "section_line",
-
-        # # attacker
-        # "data/adversarial_dataset/iterate-0/eval-response-mistral_7b-adversarial-raw-sigmoid",
-        # "data/adversarial_dataset/iterate-1/eval-response-mistral_7b-adversarial-raw-sigmoid",
-        # "data/adversarial_dataset/iterate-2/eval-response-mistral_7b-adversarial-raw-sigmoid",
-        # "data/adversarial_dataset/iterate-3/eval-response-mistral_7b-adversarial-raw-sigmoid",
-
-        # "section_line",
-
-        # # defender
-        # "data/adversarial_dataset/iterate-0/eval-response-mistral_7b",
+        f"{prefix_path}/eval/response-mistral",
+        f"{prefix_path}/eval/response-base-defender",
+        f"{prefix_path}/eval/response-adversarial-1-defender",
+        f"{prefix_path}/eval/response-adversarial-2-defender",
+        f"{prefix_path}/eval/response-adversarial-3-defender",
+        f"{prefix_path}/eval/response-adversarial-4-defender",
         
-        # "data/adversarial_dataset/iterate-0/eval-response-mistral_7b-adversarial-raw-sigmoid",
-        # "data/adversarial_dataset/iterate-0/eval-response-mistral_7b-adversarial-raw-sigmoid-adversarial-raw-sigmoid",
-        # "data/adversarial_dataset/iterate-0/eval-response-mistral_7b-adversarial-raw-sigmoid-adversarial-raw-sigmoid-adversarial-raw-sigmoid",
-        # "data/adversarial_dataset/iterate-0/eval-response-mistral_7b-adversarial-raw-sigmoid-adversarial-raw-sigmoid-adversarial-raw-sigmoid-adversarial-raw-sigmoid",
-        # "data/adversarial_dataset/iterate-0/eval-response-mistral_7b-adversarial-raw-sigmoid-adversarial-raw-sigmoid-adversarial-raw-sigmoid-adversarial-raw-sigmoid-adversarial-raw-sigmoid",
-
-        # "section_line",
+        "section_line",
         
-        # "data/adversarial_dataset/iterate-0/eval-response-mistral_7b-adversarial-0-defender-sigmoid",
-
-        # "data/adversarial_dataset/iterate-0/eval-response-mistral_7b-adversarial-raw-sigmoid-adversarial-0-defender-sigmoid",
-        # "data/adversarial_dataset/iterate-0/eval-response-mistral_7b-adversarial-raw-sigmoid-adversarial-0-defender-sigmoid-adversarial-1-defender-sigmoid",
-        # "data/adversarial_dataset/iterate-0/eval-response-mistral_7b-adversarial-raw-sigmoid-adversarial-0-defender-sigmoid-adversarial-1-defender-sigmoid-adversarial-2-defender-sigmoid",
-        # "data/adversarial_dataset/iterate-0/eval-response-mistral_7b-adversarial-raw-sigmoid-adversarial-0-defender-sigmoid-adversarial-1-defender-sigmoid-adversarial-2-defender-sigmoid-adversarial-3-defender-sigmoid",
+        # defender-mixed
+        f"{prefix_path}/eval/response-mistral",
+        f"{prefix_path}/eval/response-base-defender",
+        f"{prefix_path}/eval/response-adversarial-1-defender-mixed",
+        f"{prefix_path}/eval/response-adversarial-2-defender-mixed",
+        f"{prefix_path}/eval/response-adversarial-3-defender-mixed",
+        f"{prefix_path}/eval/response-adversarial-4-defender-mixed",
     ])
     seed: int = field(default=42)
 

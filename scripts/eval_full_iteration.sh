@@ -24,12 +24,15 @@ NUM_PROCESSES=$(expr $NNODES \* $GPUS_PER_NODE)
 ACCELERATE_CONFIG_PATH=scripts/accelerate_config.yaml
 DS_CONFIG_PATH=scripts/ds_config.json
 
-start_iter=3
-num_iters=3
+pref_loss=sigmoid
+defender_dataset_suffix=defender
+start_iter=0        # start from 0
+num_iters=4
+start_step=1
 rm_model=output/rm/mistral_7b-adversarial-raw-1
 reference_attacker_model=$MISTRAL_MODEL
-reference_defender_model=output/dpo/mistral_7b-adversarial-raw-sigmoid
-baseline_defender_model=output/dpo/mistral_7b-adversarial-raw-sigmoid
+reference_defender_model=output/dpo/auto-mistral_7b-adversarial-raw-$pref_loss
+baseline_defender_model=output/dpo/auto-mistral_7b-adversarial-raw-$pref_loss
 data_path=$ADV_DATA_PATH
 RETRY_LIMIT=3
 RETRY_DELAY=60  # seconds
@@ -44,6 +47,7 @@ for iter in $(seq $start_iter $num_iters); do
     echo "Using reference_defender_model: $reference_defender_model" | tee -a $log_file
     echo "Using baseline_defender_model: $baseline_defender_model" | tee -a $log_file
     echo "Using rm_model: $rm_model" | tee -a $log_file
+    step=1
 
     if [ $iter -eq 0 ]; then
         subfolder=base
@@ -55,6 +59,11 @@ for iter in $(seq $start_iter $num_iters); do
     attempt=0
     until [ $attempt -ge $RETRY_LIMIT ]
     do
+        if [ $step -lt $start_step ] && [ $iter -eq $start_iter ]; then
+            echo "Skipping step $step on iter $iter"
+            step=$((step+1))
+            break
+        fi
         CMD="
         accelerate launch \
             --multi_gpu \
@@ -84,10 +93,11 @@ for iter in $(seq $start_iter $num_iters); do
 
         cmd_status=${PIPESTATUS[0]}  # Get the exit status of the bash command, not tee
         if [ $cmd_status -eq 0 ]; then
-            echo "Command succeeded on attempt $attempt" | tee -a $log_file
+            echo "Command succeeded on iter $iter step $step attempt $attempt" | tee -a $log_file
+            step=$((step+1))
             break
         else
-            echo "Command failed with status $cmd_status" | tee -a $log_file
+            echo "Command failed on iter $iter step $step attempt $attempt with status $cmd_status" | tee -a $log_file
             attempt=$((attempt+1))
             if [ $attempt -lt $RETRY_LIMIT ]; then
                 echo "Sleeping for $RETRY_DELAY seconds before retrying..." | tee -a $log_file
@@ -103,6 +113,11 @@ for iter in $(seq $start_iter $num_iters); do
     attempt=0
     until [ $attempt -ge $RETRY_LIMIT ]
     do
+        if [ $step -lt $start_step ] && [ $iter -eq $start_iter ]; then
+            echo "Skipping step $step on iter $iter"
+            step=$((step+1))
+            break
+        fi
         # TODO
         CMD="
         python scripts/generate_responses.py \
@@ -122,10 +137,11 @@ for iter in $(seq $start_iter $num_iters); do
 
         cmd_status=${PIPESTATUS[0]}  # Get the exit status of the bash command, not tee
         if [ $cmd_status -eq 0 ]; then
-            echo "Command succeeded on attempt $attempt" | tee -a $log_file
+            echo "Command succeeded on iter $iter step $step attempt $attempt" | tee -a $log_file
+            step=$((step+1))
             break
         else
-            echo "Command failed with status $cmd_status" | tee -a $log_file
+            echo "Command failed on iter $iter step $step attempt $attempt with status $cmd_status" | tee -a $log_file
             attempt=$((attempt+1))
             if [ $attempt -lt $RETRY_LIMIT ]; then
                 echo "Sleeping for $RETRY_DELAY seconds before retrying..." | tee -a $log_file
@@ -141,11 +157,17 @@ for iter in $(seq $start_iter $num_iters); do
     attempt=0
     until [ $attempt -ge $RETRY_LIMIT ]
     do
+        if [ $step -lt $start_step ] && [ $iter -eq $start_iter ]; then
+            echo "Skipping step $step on iter $iter"
+            step=$((step+1))
+            break
+        fi
         CMD="
         accelerate launch \
             --multi_gpu \
             --config_file ${ACCELERATE_CONFIG_PATH} \
             --main_process_ip ${MASTER_ADDR} \
+            --main_process_port ${MASTER_PORT} \
             --num_processes ${NUM_PROCESSES} \
             --num_machines ${NNODES} \
         scripts/calc_response_reward.py \
@@ -168,10 +190,11 @@ for iter in $(seq $start_iter $num_iters); do
 
         cmd_status=${PIPESTATUS[0]}  # Get the exit status of the bash command, not tee
         if [ $cmd_status -eq 0 ]; then
-            echo "Command succeeded on attempt $attempt" | tee -a $log_file
+            echo "Command succeeded on iter $iter step $step attempt $attempt" | tee -a $log_file
+            step=$((step+1))
             break
         else
-            echo "Command failed with status $cmd_status" | tee -a $log_file
+            echo "Command failed on iter $iter step $step attempt $attempt with status $cmd_status" | tee -a $log_file
             attempt=$((attempt+1))
             if [ $attempt -lt $RETRY_LIMIT ]; then
                 echo "Sleeping for $RETRY_DELAY seconds before retrying..." | tee -a $log_file
@@ -187,18 +210,21 @@ for iter in $(seq $start_iter $num_iters); do
     attempt=0
     until [ $attempt -ge $RETRY_LIMIT ]
     do
+        if [ $step -lt $start_step ] && [ $iter -eq $start_iter ]; then
+            echo "Skipping step $step on iter $iter"
+            step=$((step+1))
+            break
+        fi
         if [ $iter -eq 0 ]; then
             model_name_or_path=$reference_defender_model
-            output_name=$data_path/eval/response-base-defender
+            output_name=$data_path/eval/response-base-$defender_dataset_suffix
         else
             STAGE=dpo
-            dataset_name=adversarial-$iter-defender
-            pref_loss=sigmoid
-            pref_beta=0.01
+            dataset_name=adversarial-$iter-$defender_dataset_suffix
             defender_run_name="auto-mistral_7b-$dataset_name-$pref_loss"
 
             model_name_or_path=output/$STAGE/$defender_run_name
-            output_name=$data_path/eval/response-adversarial-$iter-defender
+            output_name=$data_path/eval/response-adversarial-$iter-$defender_dataset_suffix
         fi
         CMD="
         python scripts/generate_responses.py \
@@ -218,10 +244,11 @@ for iter in $(seq $start_iter $num_iters); do
 
         cmd_status=${PIPESTATUS[0]}  # Get the exit status of the bash command, not tee
         if [ $cmd_status -eq 0 ]; then
-            echo "Command succeeded on attempt $attempt" | tee -a $log_file
+            echo "Command succeeded on iter $iter step $step attempt $attempt" | tee -a $log_file
+            step=$((step+1))
             break
         else
-            echo "Command failed with status $cmd_status" | tee -a $log_file
+            echo "Command failed on iter $iter step $step attempt $attempt with status $cmd_status" | tee -a $log_file
             attempt=$((attempt+1))
             if [ $attempt -lt $RETRY_LIMIT ]; then
                 echo "Sleeping for $RETRY_DELAY seconds before retrying..." | tee -a $log_file
@@ -237,11 +264,17 @@ for iter in $(seq $start_iter $num_iters); do
     attempt=0
     until [ $attempt -ge $RETRY_LIMIT ]
     do
+        if [ $step -lt $start_step ] && [ $iter -eq $start_iter ]; then
+            echo "Skipping step $step on iter $iter"
+            step=$((step+1))
+            break
+        fi
         CMD="
         accelerate launch \
             --multi_gpu \
             --config_file ${ACCELERATE_CONFIG_PATH} \
             --main_process_ip ${MASTER_ADDR} \
+            --main_process_port ${MASTER_PORT} \
             --num_processes ${NUM_PROCESSES} \
             --num_machines ${NNODES} \
         scripts/calc_response_reward.py \
@@ -264,10 +297,11 @@ for iter in $(seq $start_iter $num_iters); do
 
         cmd_status=${PIPESTATUS[0]}  # Get the exit status of the bash command, not tee
         if [ $cmd_status -eq 0 ]; then
-            echo "Command succeeded on attempt $attempt" | tee -a $log_file
+            echo "Command succeeded on iter $iter step $step attempt $attempt" | tee -a $log_file
+            step=$((step+1))
             break
         else
-            echo "Command failed with status $cmd_status" | tee -a $log_file
+            echo "Command failed on iter $iter step $step attempt $attempt with status $cmd_status" | tee -a $log_file
             attempt=$((attempt+1))
             if [ $attempt -lt $RETRY_LIMIT ]; then
                 echo "Sleeping for $RETRY_DELAY seconds before retrying..." | tee -a $log_file
@@ -283,14 +317,17 @@ for iter in $(seq $start_iter $num_iters); do
     attempt=0
     until [ $attempt -ge $RETRY_LIMIT ]
     do
+        if [ $step -lt $start_step ] && [ $iter -eq $start_iter ]; then
+            echo "Skipping step $step on iter $iter"
+            step=$((step+1))
+            break
+        fi
         if [ $iter -eq 0 ]; then
             model_name_or_path=$reference_defender_model
             output_name=$data_path/eval/response-base-baseline
         else
             STAGE=dpo
             dataset_name=adversarial-$iter-baseline
-            pref_loss=sigmoid
-            pref_beta=0.01
             defender_run_name="auto-mistral_7b-$dataset_name-$pref_loss"
 
             model_name_or_path=output/$STAGE/$defender_run_name
@@ -314,10 +351,11 @@ for iter in $(seq $start_iter $num_iters); do
 
         cmd_status=${PIPESTATUS[0]}  # Get the exit status of the bash command, not tee
         if [ $cmd_status -eq 0 ]; then
-            echo "Command succeeded on attempt $attempt" | tee -a $log_file
+            echo "Command succeeded on iter $iter step $step attempt $attempt" | tee -a $log_file
+            step=$((step+1))
             break
         else
-            echo "Command failed with status $cmd_status" | tee -a $log_file
+            echo "Command failed on iter $iter step $step attempt $attempt with status $cmd_status" | tee -a $log_file
             attempt=$((attempt+1))
             if [ $attempt -lt $RETRY_LIMIT ]; then
                 echo "Sleeping for $RETRY_DELAY seconds before retrying..." | tee -a $log_file
@@ -333,12 +371,18 @@ for iter in $(seq $start_iter $num_iters); do
     attempt=0
     until [ $attempt -ge $RETRY_LIMIT ]
     do
+        if [ $step -lt $start_step ] && [ $iter -eq $start_iter ]; then
+            echo "Skipping step $step on iter $iter"
+            step=$((step+1))
+            break
+        fi
         # TODO
         CMD="
         accelerate launch \
             --multi_gpu \
             --config_file ${ACCELERATE_CONFIG_PATH} \
             --main_process_ip ${MASTER_ADDR} \
+            --main_process_port ${MASTER_PORT} \
             --num_processes ${NUM_PROCESSES} \
             --num_machines ${NNODES} \
         scripts/calc_response_reward.py \
@@ -361,10 +405,11 @@ for iter in $(seq $start_iter $num_iters); do
 
         cmd_status=${PIPESTATUS[0]}  # Get the exit status of the bash command, not tee
         if [ $cmd_status -eq 0 ]; then
-            echo "Command succeeded on attempt $attempt" | tee -a $log_file
+            echo "Command succeeded on iter $iter step $step attempt $attempt" | tee -a $log_file
+            step=$((step+1))
             break
         else
-            echo "Command failed with status $cmd_status" | tee -a $log_file
+            echo "Command failed on iter $iter step $step attempt $attempt with status $cmd_status" | tee -a $log_file
             attempt=$((attempt+1))
             if [ $attempt -lt $RETRY_LIMIT ]; then
                 echo "Sleeping for $RETRY_DELAY seconds before retrying..." | tee -a $log_file
@@ -381,6 +426,11 @@ for iter in $(seq $start_iter $num_iters); do
         attempt=0
         until [ $attempt -ge $RETRY_LIMIT ]
         do
+            if [ $step -lt $start_step ] && [ $iter -eq $start_iter ]; then
+                echo "Skipping step $step on iter $iter"
+                step=$((step+1))
+                break
+            fi
             model_name_or_path=$MISTRAL_MODEL
             output_name=$data_path/eval/response-mistral
             CMD="
@@ -401,10 +451,11 @@ for iter in $(seq $start_iter $num_iters); do
 
             cmd_status=${PIPESTATUS[0]}  # Get the exit status of the bash command, not tee
             if [ $cmd_status -eq 0 ]; then
-                echo "Command succeeded on attempt $attempt" | tee -a $log_file
+                echo "Command succeeded on iter $iter step $step attempt $attempt" | tee -a $log_file
+                step=$((step+1))
                 break
             else
-                echo "Command failed with status $cmd_status" | tee -a $log_file
+                echo "Command failed on iter $iter step $step attempt $attempt with status $cmd_status" | tee -a $log_file
                 attempt=$((attempt+1))
                 if [ $attempt -lt $RETRY_LIMIT ]; then
                     echo "Sleeping for $RETRY_DELAY seconds before retrying..." | tee -a $log_file
@@ -420,12 +471,18 @@ for iter in $(seq $start_iter $num_iters); do
         attempt=0
         until [ $attempt -ge $RETRY_LIMIT ]
         do
+            if [ $step -lt $start_step ] && [ $iter -eq $start_iter ]; then
+                echo "Skipping step $step on iter $iter"
+                step=$((step+1))
+                break
+            fi
             # TODO
             CMD="
             accelerate launch \
                 --multi_gpu \
                 --config_file ${ACCELERATE_CONFIG_PATH} \
                 --main_process_ip ${MASTER_ADDR} \
+                --main_process_port ${MASTER_PORT} \
                 --num_processes ${NUM_PROCESSES} \
                 --num_machines ${NNODES} \
             scripts/calc_response_reward.py \
@@ -448,10 +505,11 @@ for iter in $(seq $start_iter $num_iters); do
 
             cmd_status=${PIPESTATUS[0]}  # Get the exit status of the bash command, not tee
             if [ $cmd_status -eq 0 ]; then
-                echo "Command succeeded on attempt $attempt" | tee -a $log_file
+                echo "Command succeeded on iter $iter step $step attempt $attempt" | tee -a $log_file
+                step=$((step+1))
                 break
             else
-                echo "Command failed with status $cmd_status" | tee -a $log_file
+                echo "Command failed on iter $iter step $step attempt $attempt with status $cmd_status" | tee -a $log_file
                 attempt=$((attempt+1))
                 if [ $attempt -lt $RETRY_LIMIT ]; then
                     echo "Sleeping for $RETRY_DELAY seconds before retrying..." | tee -a $log_file

@@ -43,11 +43,13 @@ class ScriptArguments:
     max_samples: int = field(default=-1)
     num_generated_responses: int = field(default=1)
     prompt_ver: str = field(default="v1")
+    dataset_name: Literal["alpaca_eval", "hh_rlhf_harmless"] = field(default="hh_rlhf_harmless")
     output_dir: str = field(default="output/debug/")
 
 @dataclass
 class VLLMEngineArgs(AsyncEngineArgs):
     model: str = field(default="/mnt/hwfile/llm-safety/models/Mistral-7B-Instruct-v0.2")
+    disable_custom_all_reduce: bool = True
 
 
 console = Console()
@@ -94,7 +96,19 @@ async def main(args: ScriptArguments, engine_args: VLLMEngineArgs):
     )
     
     # Load dataset
-    data = datasets.load_dataset("tatsu-lab/alpaca_eval", "alpaca_eval")["eval"]
+    if args.dataset_name == "alpaca_eval":
+        data = datasets.load_dataset("tatsu-lab/alpaca_eval", "alpaca_eval")["eval"]
+    elif args.dataset_name == "hh_rlhf_harmless":
+        data = datasets.load_dataset(
+            path="data/custom_dataset/hh_rlhf.py",
+            name="harmless",
+            trust_remote_code=True,
+            num_proc=1
+        )["test"]
+        # remove all columns except instruction
+        data = data.map(lambda x: {"instruction": x["instruction"]}, remove_columns=data.column_names)
+    else:
+        raise ValueError(f"Invalid dataset name: {args.dataset}")
 
     if args.max_samples > 0:
         data = data.select(range(args.max_samples)) 
@@ -146,13 +160,16 @@ async def main(args: ScriptArguments, engine_args: VLLMEngineArgs):
     results = []
     for response in responses:
         i = int(response.custom_id)
-        example = dict(data[i])
-        example["generator"] = model_base_name
-        example["output"] = response.response.choices[0].message.content
+        example = {
+            "instruction": example["instruction"],
+            "output": response.response.choices[0].message.content,
+            "generator": model_base_name,
+            "dataset": "hh_rlhf_harmless"
+        }
         results.append(example)
 
     # Save
-    output_dir = os.path.join(args.output_dir, f"alpaca_eval_{model_base_name}.json")
+    output_dir = os.path.join(args.output_dir, f"{args.dataset_name}_{model_base_name}.json")
     if not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir)
     with open(output_dir, "w") as f:

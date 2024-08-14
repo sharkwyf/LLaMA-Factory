@@ -24,12 +24,14 @@ NUM_PROCESSES=$(expr $NNODES \* $GPUS_PER_NODE)
 ACCELERATE_CONFIG_PATH=scripts/accelerate_config.yaml
 DS_CONFIG_PATH=scripts/ds_config.json
 
-start_iter=0
-num_iters=3
+pref_loss=sigmoid
+defender_dataset_suffix=defender
+start_iter=-1
+num_iters=4
 rm_model=output/rm/mistral_7b-adversarial-raw-1
 reference_attacker_model=$MISTRAL_MODEL
-reference_defender_model=output/dpo/mistral_7b-adversarial-raw-sigmoid
-baseline_defender_model=output/dpo/mistral_7b-adversarial-raw-sigmoid
+reference_defender_model=output/dpo/$pref_loss/auto-mistral_7b-adversarial-raw-$pref_loss
+baseline_defender_model=output/dpo/$pref_loss/auto-mistral_7b-adversarial-raw-$pref_loss
 data_path=$ADV_DATA_PATH
 RETRY_LIMIT=3
 RETRY_DELAY=60  # seconds
@@ -41,26 +43,23 @@ echo "Start evaluting for iteration $start_iter to $num_iters" | tee $log_file
 for iter in $(seq $start_iter $num_iters); do
     echo "Running iteration $iter" | tee -a $log_file
 
-    if [ $iter -eq 0 ]; then
-        subfolder=base
-    else
-        subfolder=iterate-$iter
-    fi
-
-    # Step 1. Calculate chosen - rejected of harmful prompts
+    # Step 1. Generate alpaca response of defender models
     attempt=0
     until [ $attempt -ge $RETRY_LIMIT ]
     do
-        if [ $iter -eq 0 ]; then
+        if [ $iter -eq -1 ]; then
+            model_name_or_path=$MISTRAL_MODEL
+        elif [ $iter -eq 0 ]; then
             model_name_or_path=$reference_defender_model
         else
-            model_name_or_path=output/dpo/auto-mistral_7b-adversarial-$iter-defender-sigmoid
+            model_name_or_path=output/dpo/$pref_loss/auto-mistral_7b-adversarial-$iter-$defender_dataset_suffix-$pref_loss
         fi
 
         CMD="
         python scripts/generate_alpca_eval_responses.py \
             --model $model_name_or_path \
             --output_dir $data_path/eval/ \
+            --disable-log-requests \
         "
         echo -e "\n\n\n======================================================\n\n\n" | tee -a $log_file
         echo "Iteration: $iter (attempt: $attempt), running command: Step 1: $CMD" | tee -a $log_file
@@ -83,4 +82,40 @@ for iter in $(seq $start_iter $num_iters); do
         fi
     done
 
+    # Step 2. Generate alpaca response of baseline methods
+    attempt=0
+    until [ $attempt -ge $RETRY_LIMIT ]
+    do
+        if [ $iter -ge 1 ]; then
+            model_name_or_path=output/dpo/$pref_loss/auto-mistral_7b-adversarial-$iter-baseline-$pref_loss
+        else
+            break
+        fi
+
+        CMD="
+        python scripts/generate_alpca_eval_responses.py \
+            --model $model_name_or_path \
+            --output_dir $data_path/eval/ \
+            --disable-log-requests \
+        "
+        echo -e "\n\n\n======================================================\n\n\n" | tee -a $log_file
+        echo "Iteration: $iter (attempt: $attempt), running command: Step 2: $CMD" | tee -a $log_file
+        bash -c "$CMD"  2>&1 | tee -a $log_file
+
+        cmd_status=${PIPESTATUS[0]}  # Get the exit status of the bash command, not tee
+        if [ $cmd_status -eq 0 ]; then
+            echo "Command succeeded on attempt $attempt" | tee -a $log_file
+            break
+        else
+            echo "Command failed with status $cmd_status" | tee -a $log_file
+            attempt=$((attempt+1))
+            if [ $attempt -lt $RETRY_LIMIT ]; then
+                echo "Sleeping for $RETRY_DELAY seconds before retrying..." | tee -a $log_file
+                sleep $RETRY_DELAY
+            else
+                echo "Reached maximum number of attempts. Exiting..." | tee -a $log_file
+                exit 1
+            fi
+        fi
+    done
 done

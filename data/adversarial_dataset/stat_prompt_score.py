@@ -17,14 +17,27 @@ from functools import partial
 from datasets import load_dataset, concatenate_datasets
 from typing import List
 
+prefix_path = "data/adversarial_dataset/exp"
+
 @dataclass(kw_only=True)
 class ScriptArguments:
     data_path: List[str] = field(default_factory=lambda: [
-        "data/adversarial_dataset/exp/eval/score-base",
-        "data/adversarial_dataset/exp/eval/score-iterate-1",
-        "data/adversarial_dataset/exp/eval/score-iterate-2",
-        "data/adversarial_dataset/exp/eval/score-iterate-3",
-        "data/adversarial_dataset/exp/eval/score-iterate-4",
+        # attacker
+        f"{prefix_path}/eval/score-base",
+        f"{prefix_path}/eval/score-iterate-1",
+        f"{prefix_path}/eval/score-iterate-2",
+        f"{prefix_path}/eval/score-iterate-3",
+        f"{prefix_path}/eval/score-iterate-4",
+
+        "section_line",
+
+        # defender
+        # f"{prefix_path}/eval/score-base",
+        # f"{prefix_path}/eval/score-iterate-1",
+        # f"{prefix_path}/eval/score-iterate-2",
+        # f"{prefix_path}/eval/score-iterate-3",
+        # f"{prefix_path}/eval/score-iterate-4",
+
     ])
     seed: int = field(default=42)
 
@@ -49,7 +62,10 @@ table.add_column("Last harmful reward", style="dim")
 
 # open the data file
 for path in script_args.data_path:
-    # for split in ["train", "test"]:
+    if path == "section_line":
+        table.add_section()
+        continue
+    
     for split in ["test"]:
         if not os.path.exists(os.path.join(path, f"{split}.json")):
             print(f"File {os.path.join(path, f'{split}.json')} not found")

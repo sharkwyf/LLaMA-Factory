@@ -197,7 +197,7 @@ async def main(script_args: ScriptArguments, engine_args: VLLMEngineArgs):
                         "model": engine_args.model,
                         "n": script_args.num_generated_prompts,
                         "stream": False,
-                        "max_tokens": 2048,
+                        "max_tokens": 1024,
                         "temperature": 1.0,
                         "top_p": 0.9,
                         "frequency_penalty": 1.1,

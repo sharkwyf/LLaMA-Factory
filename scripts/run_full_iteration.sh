@@ -26,34 +26,173 @@ NUM_PROCESSES=$(expr $NNODES \* $GPUS_PER_NODE)
 ACCELERATE_CONFIG_PATH=scripts/accelerate_config.yaml
 DS_CONFIG_PATH=scripts/ds_config.json
 
-defender_dataset_suffix=defender-mixed
-start_iter=1
-num_iters=1
-if [ $start_iter -eq 1 ]; then
+rm -rf /mnt/lustre/wangyuanfu/.cache/huggingface/datasets/adversarial_dataset
+loss_type=orpo
+if [ $loss_type == "dpo" ]; then
+    pref_loss=sigmoid
+    pref_beta=0.01  # try larger beta
+    simpo_gamma=0.
+    learning_rate=5.0e-7
+
+elif [ $loss_type == "simpo" ]; then
+    pref_loss=simpo
+    pref_beta=2.5
+    simpo_gamma=0.3
+    learning_rate=5.0e-7
+
+elif [ $loss_type == "orpo" ]; then
+    pref_loss=orpo
+    pref_beta=0.2
+    pref_beta=1.0
+    simpo_gamma=0.
+    learning_rate=5.0e-7
+fi
+
+defender_dataset_suffix=defender
+start_iter=0        # start from 0
+num_iters=3
+start_step=0
+if [ $start_iter -le 1 ]; then
     reference_attacker_model=$MISTRAL_MODEL
-    reference_defender_model=output/dpo/mistral_7b-adversarial-raw-sigmoid
-    baseline_defender_model=output/dpo/mistral_7b-adversarial-raw-sigmoid
+    reference_defender_model=output/dpo/auto-mistral_7b-adversarial-raw-$pref_loss
+    baseline_defender_model=output/dpo/auto-mistral_7b-adversarial-raw-$pref_loss
 else
     prev_iter=$((start_iter-1))
-    reference_attacker_model=output/dpo/auto-mistral_7b-adversarial-$prev_iter-attacker-sigmoid
-    reference_defender_model=output/dpo/auto-mistral_7b-adversarial-$prev_iter-$defender_dataset_suffix-sigmoid
-    baseline_defender_model=output/dpo/auto-mistral_7b-adversarial-$prev_iter-baseline-sigmoid
+    reference_attacker_model=output/dpo/auto-mistral_7b-adversarial-$prev_iter-attacker-$pref_loss
+    reference_defender_model=output/dpo/auto-mistral_7b-adversarial-$prev_iter-$defender_dataset_suffix-$pref_loss
+    baseline_defender_model=output/dpo/auto-mistral_7b-adversarial-$prev_iter-baseline-$pref_loss
 fi
 data_path=$ADV_DATA_PATH
 RETRY_LIMIT=3
 RETRY_DELAY=60  # seconds
 
+echo """
+Pref loss: \`$pref_loss\`
+Pref beta: \`$pref_beta\`
+Simpo gamma: \`$simpo_gamma\`
+Learning rate: \`$learning_rate\`
+Defender training data: \`$defender_dataset_suffix\`
+""" > $ADV_DATA_PATH/main.md
+
+
 for iter in $(seq $start_iter $num_iters); do
+    step=0
+    if [ $iter -eq 0 ]; then
+        # Step 0. Train the baseline defender model
+        attempt=0
+        until [ $attempt -ge $RETRY_LIMIT ]
+        do
+            if [ $step -lt $start_step ] && [ $iter -eq $start_iter ]; then
+                echo "Skipping step $step on iter $iter"
+                step=$((step+1))
+                break
+            fi
+            STAGE=dpo
+            model_name_or_path=$MISTRAL_MODEL
+            dataset_name=adversarial-raw
+            baseline_run_name="auto-mistral_7b-$dataset_name-$pref_loss"
+
+            TOTAL_BATCHSIZE=512
+            PER_DEVICE_TRAIN_BATCH_SIZE=8
+            GRADIENT_ACCUMULATION_STEPS=$(($TOTAL_BATCHSIZE / $NNODES / $GPUS_PER_NODE / $PER_DEVICE_TRAIN_BATCH_SIZE))
+            # check if TOTAL_BATCHSIZE is divisible by (NNODES * GPUS_PER_NODE * PER_DEVICE_TRAIN_BATCH_SIZE)
+            if [ $(($GRADIENT_ACCUMULATION_STEPS * $NNODES * $GPUS_PER_NODE * $PER_DEVICE_TRAIN_BATCH_SIZE)) -ne $TOTAL_BATCHSIZE ]; then
+                echo "TOTAL_BATCHSIZE: ${TOTAL_BATCHSIZE} is not divisible by (NNODES * GPUS_PER_NODE * PER_DEVICE_TRAIN_BATCH_SIZE): $(($NNODES * $GPUS_PER_NODE * $PER_DEVICE_TRAIN_BATCH_SIZE))" | tee -a $log_file
+                exit 1
+            fi
+            echo "TOTAL_BATCHSIZE: ${TOTAL_BATCHSIZE}, PER_DEVICE_TRAIN_BATCH_SIZE, ${PER_DEVICE_TRAIN_BATCH_SIZE}, GRADIENT_ACCUMULATION_STEPS: ${GRADIENT_ACCUMULATION_STEPS}" | tee -a $log_file
+
+            CMD="
+            accelerate launch \
+                --config_file ${ACCELERATE_CONFIG_PATH} \
+                --main_process_ip ${MASTER_ADDR} \
+                --main_process_port ${MASTER_PORT} \
+                --num_processes ${NUM_PROCESSES} \
+                --num_machines ${NNODES} \
+                --machine_rank \$SLURM_PROCID \
+            src/train.py \
+                --stage $STAGE \
+                --do_train \
+                --do_eval \
+                --model_name_or_path ${model_name_or_path} \
+                --dataset adversarial-raw \
+                --split train \
+                --val_size 0.05 \
+                --preprocessing_num_workers 4 \
+                --dataloader_num_workers 8 \
+                --overwrite_cache \
+                --evaluation_strategy steps \
+                --eval_steps 100 \
+                --template mistral \
+                --finetuning_type full \
+                --output_dir output/$STAGE/$baseline_run_name/ \
+                --overwrite_output_dir \
+                --per_device_train_batch_size ${PER_DEVICE_TRAIN_BATCH_SIZE} \
+                --per_device_eval_batch_size ${PER_DEVICE_TRAIN_BATCH_SIZE} \
+                --gradient_accumulation_steps ${GRADIENT_ACCUMULATION_STEPS} \
+                --lr_scheduler_type cosine \
+                --warmup_ratio 0.1 \
+                --learning_rate $learning_rate \
+                --num_train_epochs 1.0 \
+                --top_k 0 \
+                --top_p 0.9 \
+                --logging_first_step \
+                --logging_steps 5 \
+                --run_name $STAGE-$baseline_run_name \
+                --save_steps 1000 \
+                --plot_loss \
+                --bf16 \
+                --seed 42 \
+                --flash_attn fa2 \
+                --pref_loss $pref_loss \
+                --pref_beta $pref_beta \
+                --simpo_gamma $simpo_gamma \
+                
+            "
+            echo -e "\n\n\n======================================================\n\n\n" | tee -a $log_file
+            echo "Iteration: $iter (attempt: $attempt), running command: Step $step: $CMD" | tee -a $log_file
+            bash -c "$CMD"  2>&1 | tee -a $log_file
+            
+            cmd_status=${PIPESTATUS[0]}  # Get the exit status of the bash command, not tee
+            if [ $cmd_status -eq 0 ]; then
+                echo "Command succeeded on iter $iter step $step attempt $attempt" | tee -a $log_file
+                step=$((step+1))
+                break
+            else
+                echo "Command failed on iter $iter step $step attempt $attempt with status $cmd_status" | tee -a $log_file
+                attempt=$((attempt+1))
+                if [ $attempt -lt $RETRY_LIMIT ]; then
+                    echo "Sleeping for $RETRY_DELAY seconds before retrying..." | tee -a $log_file
+                    sleep $RETRY_DELAY
+                else
+                    echo "Reached maximum number of attempts. Exiting..." | tee -a $log_file
+                    exit 1
+                fi
+            fi
+        done
+        continue
+    fi
+
     mkdir -p $data_path/iterate-${iter}
     log_file="$data_path/iterate-${iter}/main.log"
-    echo "Running iteration $iter" | tee $log_file
+    if [ $start_step -eq 1 ]; then
+        echo "Running iteration $iter" | tee $log_file
+    else
+        echo "Continue running iteration $iter step $start_step" | tee -a $log_file
+    fi
     echo "Using reference_attacker_model: $reference_attacker_model" | tee -a $log_file
     echo "Using reference_defender_model: $reference_defender_model" | tee -a $log_file
+    step=1
 
     # Step 1. Generate harmful prompts
     attempt=0
     until [ $attempt -ge $RETRY_LIMIT ]
     do
+        if [ $step -lt $start_step ] && [ $iter -eq $start_iter ]; then
+            echo "Skipping step $step on iter $iter"
+            step=$((step+1))
+            break
+        fi
         CMD="
         python scripts/generate_harmful_prompts.py \
             --dataset_lists data/custom_dataset/hh_rlhf.py harmless \
@@ -67,15 +206,16 @@ for iter in $(seq $start_iter $num_iters); do
             --disable-log-requests \
         "
         echo -e "\n\n\n======================================================\n\n\n" | tee -a $log_file
-        echo "Iteration: $iter (attempt: $attempt), running command: Step 1: $CMD" | tee -a $log_file
+        echo "Iteration: $iter (attempt: $attempt), running command: Step $step: $CMD" | tee -a $log_file
         bash -c "$CMD"  2>&1 | tee -a $log_file
 
         cmd_status=${PIPESTATUS[0]}  # Get the exit status of the bash command, not tee
         if [ $cmd_status -eq 0 ]; then
-            echo "Command succeeded on attempt $attempt" | tee -a $log_file
+            echo "Command succeeded on iter $iter step $step attempt $attempt" | tee -a $log_file
+            step=$((step+1))
             break
         else
-            echo "Command failed with status $cmd_status" | tee -a $log_file
+            echo "Command failed on iter $iter step $step attempt $attempt with status $cmd_status" | tee -a $log_file
             attempt=$((attempt+1))
             if [ $attempt -lt $RETRY_LIMIT ]; then
                 echo "Sleeping for $RETRY_DELAY seconds before retrying..." | tee -a $log_file
@@ -91,6 +231,11 @@ for iter in $(seq $start_iter $num_iters); do
     attempt=0
     until [ $attempt -ge $RETRY_LIMIT ]
     do
+        if [ $step -lt $start_step ] && [ $iter -eq $start_iter ]; then
+            echo "Skipping step $step on iter $iter"
+            step=$((step+1))
+            break
+        fi
         CMD="
         accelerate launch \
             --multi_gpu \
@@ -114,15 +259,16 @@ for iter in $(seq $start_iter $num_iters); do
             --beta 1 \
         "
         echo -e "\n\n\n======================================================\n\n\n" | tee -a $log_file
-        echo "Iteration: $iter (attempt: $attempt), running command: Step 2: $CMD" | tee -a $log_file
+        echo "Iteration: $iter (attempt: $attempt), running command: Step $step: $CMD" | tee -a $log_file
         bash -c "$CMD"  2>&1 | tee -a $log_file
 
         cmd_status=${PIPESTATUS[0]}  # Get the exit status of the bash command, not tee
         if [ $cmd_status -eq 0 ]; then
-            echo "Command succeeded on attempt $attempt" | tee -a $log_file
+            echo "Command succeeded on iter $iter step $step attempt $attempt" | tee -a $log_file
+            step=$((step+1))
             break
         else
-            echo "Command failed with status $cmd_status" | tee -a $log_file
+            echo "Command failed on iter $iter step $step attempt $attempt with status $cmd_status" | tee -a $log_file
             attempt=$((attempt+1))
             if [ $attempt -lt $RETRY_LIMIT ]; then
                 echo "Sleeping for $RETRY_DELAY seconds before retrying..." | tee -a $log_file
@@ -138,11 +284,14 @@ for iter in $(seq $start_iter $num_iters); do
     attempt=0
     until [ $attempt -ge $RETRY_LIMIT ]
     do
+        if [ $step -lt $start_step ] && [ $iter -eq $start_iter ]; then
+            echo "Skipping step $step on iter $iter"
+            step=$((step+1))
+            break
+        fi
         STAGE=dpo
         model_name_or_path=$reference_attacker_model
         dataset_name=adversarial-$iter-attacker
-        pref_loss=sigmoid
-        pref_beta=0.01
         attacker_run_name="auto-mistral_7b-$dataset_name-$pref_loss"
 
         TOTAL_BATCHSIZE=512
@@ -186,12 +335,12 @@ for iter in $(seq $start_iter $num_iters); do
             --gradient_accumulation_steps ${GRADIENT_ACCUMULATION_STEPS} \
             --lr_scheduler_type cosine \
             --warmup_ratio 0.1 \
-            --learning_rate 5.0e-7 \
+            --learning_rate $learning_rate \
             --num_train_epochs 1.0 \
             --top_k 0 \
             --top_p 0.9 \
             --logging_first_step \
-            --logging_steps 1 \
+            --logging_steps 5 \
             --run_name $STAGE-$attacker_run_name \
             --save_steps 1000 \
             --plot_loss \
@@ -200,17 +349,19 @@ for iter in $(seq $start_iter $num_iters); do
             --flash_attn fa2 \
             --pref_loss $pref_loss \
             --pref_beta $pref_beta \
+            --simpo_gamma $simpo_gamma \
         "
         echo -e "\n\n\n======================================================\n\n\n" | tee -a $log_file
-        echo "Iteration: $iter (attempt: $attempt), running command: Step 3: $CMD" | tee -a $log_file
+        echo "Iteration: $iter (attempt: $attempt), running command: Step $step: $CMD" | tee -a $log_file
         bash -c "$CMD"  2>&1 | tee -a $log_file
         
         cmd_status=${PIPESTATUS[0]}  # Get the exit status of the bash command, not tee
         if [ $cmd_status -eq 0 ]; then
-            echo "Command succeeded on attempt $attempt" | tee -a $log_file
+            echo "Command succeeded on iter $iter step $step attempt $attempt" | tee -a $log_file
+            step=$((step+1))
             break
         else
-            echo "Command failed with status $cmd_status" | tee -a $log_file
+            echo "Command failed on iter $iter step $step attempt $attempt with status $cmd_status" | tee -a $log_file
             attempt=$((attempt+1))
             if [ $attempt -lt $RETRY_LIMIT ]; then
                 echo "Sleeping for $RETRY_DELAY seconds before retrying..." | tee -a $log_file
@@ -226,11 +377,14 @@ for iter in $(seq $start_iter $num_iters); do
     attempt=0
     until [ $attempt -ge $RETRY_LIMIT ]
     do
+        if [ $step -lt $start_step ] && [ $iter -eq $start_iter ]; then
+            echo "Skipping step $step on iter $iter"
+            step=$((step+1))
+            break
+        fi
         STAGE=dpo
         model_name_or_path=$reference_defender_model
         dataset_name=adversarial-$iter-$defender_dataset_suffix
-        pref_loss=sigmoid
-        pref_beta=0.01
         defender_run_name="auto-mistral_7b-$dataset_name-$pref_loss"
 
         TOTAL_BATCHSIZE=512
@@ -273,12 +427,12 @@ for iter in $(seq $start_iter $num_iters); do
             --gradient_accumulation_steps ${GRADIENT_ACCUMULATION_STEPS} \
             --lr_scheduler_type cosine \
             --warmup_ratio 0.1 \
-            --learning_rate 5.0e-7 \
+            --learning_rate $learning_rate \
             --num_train_epochs 1.0 \
             --top_k 0 \
             --top_p 0.9 \
             --logging_first_step \
-            --logging_steps 1 \
+            --logging_steps 5 \
             --run_name $STAGE-$defender_run_name \
             --save_steps 1000 \
             --plot_loss \
@@ -287,18 +441,20 @@ for iter in $(seq $start_iter $num_iters); do
             --flash_attn fa2 \
             --pref_loss $pref_loss \
             --pref_beta $pref_beta \
+            --simpo_gamma $simpo_gamma \
             
         "
         echo -e "\n\n\n======================================================\n\n\n" | tee -a $log_file
-        echo "Iteration: $iter (attempt: $attempt), running command: Step 4: $CMD"
+        echo "Iteration: $iter (attempt: $attempt), running command: Step $step: $CMD" | tee -a $log_file
         bash -c "$CMD"  2>&1 | tee -a $log_file
         
         cmd_status=${PIPESTATUS[0]}  # Get the exit status of the bash command, not tee
         if [ $cmd_status -eq 0 ]; then
-            echo "Command succeeded on attempt $attempt" | tee -a $log_file
+            echo "Command succeeded on iter $iter step $step attempt $attempt" | tee -a $log_file
+            step=$((step+1))
             break
         else
-            echo "Command failed with status $cmd_status" | tee -a $log_file
+            echo "Command failed on iter $iter step $step attempt $attempt with status $cmd_status" | tee -a $log_file
             attempt=$((attempt+1))
             if [ $attempt -lt $RETRY_LIMIT ]; then
                 echo "Sleeping for $RETRY_DELAY seconds before retrying..." | tee -a $log_file
@@ -314,11 +470,14 @@ for iter in $(seq $start_iter $num_iters); do
     attempt=0
     until [ $attempt -ge $RETRY_LIMIT ]
     do
+        if [ $step -lt $start_step ] && [ $iter -eq $start_iter ]; then
+            echo "Skipping step $step on iter $iter"
+            step=$((step+1))
+            break
+        fi
         STAGE=dpo
         model_name_or_path=$baseline_defender_model
         dataset_name=adversarial-$iter-baseline
-        pref_loss=sigmoid
-        pref_beta=0.01
         baseline_run_name="auto-mistral_7b-$dataset_name-$pref_loss"
 
         TOTAL_BATCHSIZE=512
@@ -361,12 +520,12 @@ for iter in $(seq $start_iter $num_iters); do
             --gradient_accumulation_steps ${GRADIENT_ACCUMULATION_STEPS} \
             --lr_scheduler_type cosine \
             --warmup_ratio 0.1 \
-            --learning_rate 5.0e-7 \
+            --learning_rate $learning_rate \
             --num_train_epochs 1.0 \
             --top_k 0 \
             --top_p 0.9 \
             --logging_first_step \
-            --logging_steps 1 \
+            --logging_steps 5 \
             --run_name $STAGE-$baseline_run_name \
             --save_steps 1000 \
             --plot_loss \
@@ -375,18 +534,20 @@ for iter in $(seq $start_iter $num_iters); do
             --flash_attn fa2 \
             --pref_loss $pref_loss \
             --pref_beta $pref_beta \
+            --simpo_gamma $simpo_gamma \
             
         "
         echo -e "\n\n\n======================================================\n\n\n" | tee -a $log_file
-        echo "Iteration: $iter (attempt: $attempt), running command: Step 4: $CMD"
+        echo "Iteration: $iter (attempt: $attempt), running command: Step $step: $CMD" | tee -a $log_file
         bash -c "$CMD"  2>&1 | tee -a $log_file
         
         cmd_status=${PIPESTATUS[0]}  # Get the exit status of the bash command, not tee
         if [ $cmd_status -eq 0 ]; then
-            echo "Command succeeded on attempt $attempt" | tee -a $log_file
+            echo "Command succeeded on iter $iter step $step attempt $attempt" | tee -a $log_file
+            step=$((step+1))
             break
         else
-            echo "Command failed with status $cmd_status" | tee -a $log_file
+            echo "Command failed on iter $iter step $step attempt $attempt with status $cmd_status" | tee -a $log_file
             attempt=$((attempt+1))
             if [ $attempt -lt $RETRY_LIMIT ]; then
                 echo "Sleeping for $RETRY_DELAY seconds before retrying..." | tee -a $log_file

@@ -49,6 +49,7 @@ class ScriptArguments:
 @dataclass
 class VLLMEngineArgs(AsyncEngineArgs):
     model: str = field(default="output/dpo/mistral_7b-adversarial-raw-sigmoid")
+    disable_custom_all_reduce: bool = True
 
 
 console = Console()
@@ -138,7 +139,7 @@ async def main(args: ScriptArguments, engine_args: VLLMEngineArgs):
                             "model": engine_args.model,
                             "n": args.num_generated_responses,
                             "stream": False,
-                            "max_tokens": 2048,
+                            "max_tokens": 1024,
                             "temperature": 1.0,
                             "top_p": 0.9,
                             "frequency_penalty": 1.1,

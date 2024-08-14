@@ -171,3 +171,4 @@ output/
 *.npy
 *.pt
 *.json
+data/adversarial_dataset/exp*
