@@ -24,20 +24,23 @@ NUM_PROCESSES=$(expr $NNODES \* $GPUS_PER_NODE)
 ACCELERATE_CONFIG_PATH=scripts/accelerate_config.yaml
 DS_CONFIG_PATH=scripts/ds_config.json
 
+alpaca_dataset_name=alpaca_eval
+alpaca_dataset_name=hh_rlhf_harmless
+
 pref_loss=sigmoid
 defender_dataset_suffix=defender
 start_iter=-1
 num_iters=4
-rm_model=output/rm/mistral_7b-adversarial-raw-1
+start_step=1
 reference_attacker_model=$MISTRAL_MODEL
-reference_defender_model=output/dpo/$pref_loss/auto-mistral_7b-adversarial-raw-$pref_loss
-baseline_defender_model=output/dpo/$pref_loss/auto-mistral_7b-adversarial-raw-$pref_loss
+reference_defender_model=$ADV_MODEL_PATH/auto-mistral_7b-adversarial-raw-$pref_loss
+baseline_defender_model=$ADV_MODEL_PATH/auto-mistral_7b-adversarial-raw-$pref_loss
 data_path=$ADV_DATA_PATH
 RETRY_LIMIT=3
 RETRY_DELAY=60  # seconds
 
 mkdir -p $data_path/eval/
-log_file="$data_path/eval/alpaca.log"
+log_file="$data_path/eval/alpaca_eval-$alpaca_dataset_name.log"
 echo "Start evaluting for iteration $start_iter to $num_iters" | tee $log_file
 
 for iter in $(seq $start_iter $num_iters); do
@@ -52,7 +55,7 @@ for iter in $(seq $start_iter $num_iters); do
         elif [ $iter -eq 0 ]; then
             model_name_or_path=$reference_defender_model
         else
-            model_name_or_path=output/dpo/$pref_loss/auto-mistral_7b-adversarial-$iter-$defender_dataset_suffix-$pref_loss
+            model_name_or_path=$ADV_MODEL_PATH/auto-mistral_7b-adversarial-$iter-$defender_dataset_suffix-$pref_loss
         fi
 
         CMD="
@@ -60,6 +63,8 @@ for iter in $(seq $start_iter $num_iters); do
             --model $model_name_or_path \
             --output_dir $data_path/eval/ \
             --disable-log-requests \
+            --dataset_name $alpaca_dataset_name \
+            # --max_samples 30 \
         "
         echo -e "\n\n\n======================================================\n\n\n" | tee -a $log_file
         echo "Iteration: $iter (attempt: $attempt), running command: Step 1: $CMD" | tee -a $log_file
@@ -87,7 +92,7 @@ for iter in $(seq $start_iter $num_iters); do
     until [ $attempt -ge $RETRY_LIMIT ]
     do
         if [ $iter -ge 1 ]; then
-            model_name_or_path=output/dpo/$pref_loss/auto-mistral_7b-adversarial-$iter-baseline-$pref_loss
+            model_name_or_path=$ADV_MODEL_PATH/auto-mistral_7b-adversarial-$iter-baseline-$pref_loss
         else
             break
         fi
@@ -97,6 +102,8 @@ for iter in $(seq $start_iter $num_iters); do
             --model $model_name_or_path \
             --output_dir $data_path/eval/ \
             --disable-log-requests \
+            --dataset_name $alpaca_dataset_name \
+            # --max_samples 30 \
         "
         echo -e "\n\n\n======================================================\n\n\n" | tee -a $log_file
         echo "Iteration: $iter (attempt: $attempt), running command: Step 2: $CMD" | tee -a $log_file

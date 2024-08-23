@@ -24,15 +24,24 @@ NUM_PROCESSES=$(expr $NNODES \* $GPUS_PER_NODE)
 ACCELERATE_CONFIG_PATH=scripts/accelerate_config.yaml
 DS_CONFIG_PATH=scripts/ds_config.json
 
+seed_dataset=ultra_feedback
+if [ $seed_dataset == "hh_rlhf_harmless" ]; then
+    seed_dataset_path=data/custom_dataset/hh_rlhf.py
+    seed_dataset_suffix=harmless
+elif [ $seed_dataset == "ultra_feedback" ]; then
+    seed_dataset_path=data/custom_dataset/ultra_feedback.py
+    seed_dataset_suffix=all
+fi
+
 pref_loss=sigmoid
 defender_dataset_suffix=defender
 start_iter=0        # start from 0
 num_iters=4
 start_step=1
-rm_model=output/rm/mistral_7b-adversarial-raw-1
+rm_model=output/rm/$seed_dataset/mistral_7b-adversarial-raw-1
 reference_attacker_model=$MISTRAL_MODEL
-reference_defender_model=output/dpo/auto-mistral_7b-adversarial-raw-$pref_loss
-baseline_defender_model=output/dpo/auto-mistral_7b-adversarial-raw-$pref_loss
+reference_defender_model=$ADV_MODEL_PATH/auto-mistral_7b-adversarial-raw-$pref_loss
+baseline_defender_model=$ADV_MODEL_PATH/auto-mistral_7b-adversarial-raw-$pref_loss
 data_path=$ADV_DATA_PATH
 RETRY_LIMIT=3
 RETRY_DELAY=60  # seconds
@@ -223,7 +232,7 @@ for iter in $(seq $start_iter $num_iters); do
             dataset_name=adversarial-$iter-$defender_dataset_suffix
             defender_run_name="auto-mistral_7b-$dataset_name-$pref_loss"
 
-            model_name_or_path=output/$STAGE/$defender_run_name
+            model_name_or_path=$ADV_MODEL_PATH/$defender_run_name
             output_name=$data_path/eval/response-adversarial-$iter-$defender_dataset_suffix
         fi
         CMD="
@@ -330,7 +339,7 @@ for iter in $(seq $start_iter $num_iters); do
             dataset_name=adversarial-$iter-baseline
             defender_run_name="auto-mistral_7b-$dataset_name-$pref_loss"
 
-            model_name_or_path=output/$STAGE/$defender_run_name
+            model_name_or_path=$ADV_MODEL_PATH/$defender_run_name
             output_name=$data_path/eval/response-adversarial-$iter-baseline
         fi
         CMD="

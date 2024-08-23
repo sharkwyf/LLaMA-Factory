@@ -27,7 +27,17 @@ ACCELERATE_CONFIG_PATH=scripts/accelerate_config.yaml
 DS_CONFIG_PATH=scripts/ds_config.json
 
 rm -rf /mnt/lustre/wangyuanfu/.cache/huggingface/datasets/adversarial_dataset
-loss_type=orpo
+
+seed_dataset=ultra_feedback
+if [ $seed_dataset == "hh_rlhf_harmless" ]; then
+    seed_dataset_path=data/custom_dataset/hh_rlhf.py
+    seed_dataset_suffix=harmless
+elif [ $seed_dataset == "ultra_feedback" ]; then
+    seed_dataset_path=data/custom_dataset/ultra_feedback.py
+    seed_dataset_suffix=all
+fi
+
+loss_type=dpo
 if [ $loss_type == "dpo" ]; then
     pref_loss=sigmoid
     pref_beta=0.01  # try larger beta
@@ -66,19 +76,66 @@ data_path=$ADV_DATA_PATH
 RETRY_LIMIT=3
 RETRY_DELAY=60  # seconds
 
-echo """
+info="""
+ADV_DATA_PATH: \`$ADV_DATA_PATH\`
+Seed dataset: \`$seed_dataset\`
 Pref loss: \`$pref_loss\`
 Pref beta: \`$pref_beta\`
 Simpo gamma: \`$simpo_gamma\`
 Learning rate: \`$learning_rate\`
 Defender training data: \`$defender_dataset_suffix\`
-""" > $ADV_DATA_PATH/main.md
+"""
+echo $info
 
+mkdir -p $ADV_DATA_PATH
+echo $info > $ADV_DATA_PATH/main.md
 
 for iter in $(seq $start_iter $num_iters); do
-    step=0
     if [ $iter -eq 0 ]; then
-        # Step 0. Train the baseline defender model
+        mkdir -p $data_path/base
+        log_file="$data_path/base/main.log"
+        echo "Running iteration $iter" | tee $log_file
+        step=1
+
+        # Step 1. Generate seed dataset
+        attempt=0
+        until [ $attempt -ge $RETRY_LIMIT ]
+        do
+            if [ $step -lt $start_step ] && [ $iter -eq $start_iter ]; then
+                echo "Skipping step $step on iter $iter"
+                step=$((step+1))
+                break
+            fi
+            CMD="
+            python scripts/generate_seed_prompts.py \
+                --dataset_lists $seed_dataset_path $seed_dataset_suffix \
+                --num_train_samples -1 \
+                --num_test_samples -1 \
+                --output_dir $data_path/base/prompt \
+            "
+            echo -e "\n\n\n======================================================\n\n\n" | tee -a $log_file
+            echo "Iteration $iter, running command: Step $step: (attempt: $attempt): \"$CMD\"" | tee -a $log_file
+            bash -c "$CMD"  2>&1 | tee -a $log_file
+
+            cmd_status=${PIPESTATUS[0]}  # Get the exit status of the bash command, not tee
+            if [ $cmd_status -eq 0 ]; then
+                echo "Command succeeded on iter $iter step $step attempt $attempt" | tee -a $log_file
+                step=$((step+1))
+                break
+            else
+                echo "Command failed on iter $iter step $step attempt $attempt with status $cmd_status" | tee -a $log_file
+                attempt=$((attempt+1))
+                if [ $attempt -lt $RETRY_LIMIT ]; then
+                    echo "Sleeping for $RETRY_DELAY seconds before retrying..." | tee -a $log_file
+                    sleep $RETRY_DELAY
+                else
+                    echo "Reached maximum number of attempts. Exiting..." | tee -a $log_file
+                    exit 1
+                fi
+            fi
+        done
+
+        # Step 2. Train the baseline defender model
         attempt=0
         until [ $attempt -ge $RETRY_LIMIT ]
         do
@@ -150,7 +207,7 @@ for iter in $(seq $start_iter $num_iters); do
                 
             "
             echo -e "\n\n\n======================================================\n\n\n" | tee -a $log_file
-            echo "Iteration: $iter (attempt: $attempt), running command: Step $step: $CMD" | tee -a $log_file
+            echo "Iteration $iter, running command: Step $step: (attempt: $attempt): \"$CMD\"" | tee -a $log_file
             bash -c "$CMD"  2>&1 | tee -a $log_file
             
             cmd_status=${PIPESTATUS[0]}  # Get the exit status of the bash command, not tee
@@ -170,397 +227,396 @@ for iter in $(seq $start_iter $num_iters); do
                 fi
             fi
         done
-        continue
-    fi
 
-    mkdir -p $data_path/iterate-${iter}
-    log_file="$data_path/iterate-${iter}/main.log"
-    if [ $start_step -eq 1 ]; then
-        echo "Running iteration $iter" | tee $log_file
     else
-        echo "Continue running iteration $iter step $start_step" | tee -a $log_file
+        mkdir -p $data_path/iterate-${iter}
+        log_file="$data_path/iterate-${iter}/main.log"
+        if [ $start_step -eq 1 ]; then
+            echo "Running iteration $iter" | tee $log_file
+        else
+            echo "Continue running iteration $iter step $start_step" | tee -a $log_file
+        fi
+        echo "Using reference_attacker_model: $reference_attacker_model" | tee -a $log_file
+        echo "Using reference_defender_model: $reference_defender_model" | tee -a $log_file
+        step=1
+
+        # Step 1. Generate harmful prompts
+        attempt=0
+        until [ $attempt -ge $RETRY_LIMIT ]
+        do
+            if [ $step -lt $start_step ] && [ $iter -eq $start_iter ]; then
+                echo "Skipping step $step on iter $iter"
+                step=$((step+1))
+                break
+            fi
+            CMD="
+            python scripts/generate_harmful_prompts.py \
+                --dataset_lists data/adversarial_dataset/adversarial_dataset.py adversarial-raw \
+                --model $reference_attacker_model \
+                --tensor-parallel-size $GPUS_PER_NODE \
+                --num_train_samples -1 \
+                --num_test_samples -1 \
+                --num_generated_prompts 8 \
+                --prompt_ver v2 \
+                --output_dir $data_path/iterate-${iter}/prompt \
+                --disable-log-requests \
+            "
+            echo -e "\n\n\n======================================================\n\n\n" | tee -a $log_file
+            echo "Iteration $iter, running command: Step $step: (attempt: $attempt): \"$CMD\"" | tee -a $log_file
+            bash -c "$CMD"  2>&1 | tee -a $log_file
+
+            cmd_status=${PIPESTATUS[0]}  # Get the exit status of the bash command, not tee
+            if [ $cmd_status -eq 0 ]; then
+                echo "Command succeeded on iter $iter step $step attempt $attempt" | tee -a $log_file
+                step=$((step+1))
+                break
+            else
+                echo "Command failed on iter $iter step $step attempt $attempt with status $cmd_status" | tee -a $log_file
+                attempt=$((attempt+1))
+                if [ $attempt -lt $RETRY_LIMIT ]; then
+                    echo "Sleeping for $RETRY_DELAY seconds before retrying..." | tee -a $log_file
+                    sleep $RETRY_DELAY
+                else
+                    echo "Reached maximum number of attempts. Exiting..." | tee -a $log_file
+                    exit 1
+                fi
+            fi
+        done
+
+        # Step 2. Calculate prompt rewards
+        attempt=0
+        until [ $attempt -ge $RETRY_LIMIT ]
+        do
+            if [ $step -lt $start_step ] && [ $iter -eq $start_iter ]; then
+                echo "Skipping step $step on iter $iter"
+                step=$((step+1))
+                break
+            fi
+            CMD="
+            accelerate launch \
+                --multi_gpu \
+                --config_file ${ACCELERATE_CONFIG_PATH} \
+                --main_process_ip ${MASTER_ADDR} \
+                --main_process_port ${MASTER_PORT} \
+                --num_processes ${NUM_PROCESSES} \
+                --num_machines ${NNODES} \
+            scripts/calc_prompt_reward.py \
+                --stage sft \
+                --model_name_or_path $reference_defender_model \
+                --raw_data_path $data_path/iterate-${iter}/prompt \
+                --save_name $data_path/iterate-${iter}/score \
+                --batch_size 8 \
+                --preprocessing_num_workers 4 \
+                --dataloader_num_workers 8 \
+                --template mistral \
+                --cutoff_len 2048 \
+                --bf16 \
+                --flash_attn off \
+                --beta 1 \
+            "
+            echo -e "\n\n\n======================================================\n\n\n" | tee -a $log_file
+            echo "Iteration $iter, running command: Step $step: (attempt: $attempt): \"$CMD\"" | tee -a $log_file
+            bash -c "$CMD"  2>&1 | tee -a $log_file
+
+            cmd_status=${PIPESTATUS[0]}  # Get the exit status of the bash command, not tee
+            if [ $cmd_status -eq 0 ]; then
+                echo "Command succeeded on iter $iter step $step attempt $attempt" | tee -a $log_file
+                step=$((step+1))
+                break
+            else
+                echo "Command failed on iter $iter step $step attempt $attempt with status $cmd_status" | tee -a $log_file
+                attempt=$((attempt+1))
+                if [ $attempt -lt $RETRY_LIMIT ]; then
+                    echo "Sleeping for $RETRY_DELAY seconds before retrying..." | tee -a $log_file
+                    sleep $RETRY_DELAY
+                else
+                    echo "Reached maximum number of attempts. Exiting..." | tee -a $log_file
+                    exit 1
+                fi
+            fi
+        done
+
+        # Step 3. Train the attacker model
+        attempt=0
+        until [ $attempt -ge $RETRY_LIMIT ]
+        do
+            if [ $step -lt $start_step ] && [ $iter -eq $start_iter ]; then
+                echo "Skipping step $step on iter $iter"
+                step=$((step+1))
+                break
+            fi
+            STAGE=dpo
+            model_name_or_path=$reference_attacker_model
+            dataset_name=adversarial-$iter-attacker
+            attacker_run_name="auto-mistral_7b-$dataset_name-$pref_loss"
+
+            TOTAL_BATCHSIZE=512
+            PER_DEVICE_TRAIN_BATCH_SIZE=4
+            GRADIENT_ACCUMULATION_STEPS=$(($TOTAL_BATCHSIZE / $NNODES / $GPUS_PER_NODE / $PER_DEVICE_TRAIN_BATCH_SIZE))
+            # check if TOTAL_BATCHSIZE is divisible by (NNODES * GPUS_PER_NODE * PER_DEVICE_TRAIN_BATCH_SIZE)
+            if [ $(($GRADIENT_ACCUMULATION_STEPS * $NNODES * $GPUS_PER_NODE * $PER_DEVICE_TRAIN_BATCH_SIZE)) -ne $TOTAL_BATCHSIZE ]; then
+                echo "TOTAL_BATCHSIZE: ${TOTAL_BATCHSIZE} is not divisible by (NNODES * GPUS_PER_NODE * PER_DEVICE_TRAIN_BATCH_SIZE): $(($NNODES * $GPUS_PER_NODE * $PER_DEVICE_TRAIN_BATCH_SIZE))" | tee -a $log_file
+                exit 1
+            fi
+            echo "TOTAL_BATCHSIZE: ${TOTAL_BATCHSIZE}, PER_DEVICE_TRAIN_BATCH_SIZE, ${PER_DEVICE_TRAIN_BATCH_SIZE}, GRADIENT_ACCUMULATION_STEPS: ${GRADIENT_ACCUMULATION_STEPS}" | tee -a $log_file
+
+            CMD="
+            accelerate launch \
+                --config_file ${ACCELERATE_CONFIG_PATH} \
+                --main_process_ip ${MASTER_ADDR} \
+                --main_process_port ${MASTER_PORT} \
+                --num_processes ${NUM_PROCESSES} \
+                --num_machines ${NNODES} \
+                --machine_rank \$SLURM_PROCID \
+            src/train.py \
+                --stage $STAGE \
+                --do_train \
+                --do_eval \
+                --model_name_or_path ${model_name_or_path} \
+                --dataset ${dataset_name} \
+                --split train \
+                --val_size 0.05 \
+                --cutoff_len 2048 \
+                --preprocessing_num_workers 4 \
+                --dataloader_num_workers 8 \
+                --overwrite_cache \
+                --evaluation_strategy steps \
+                --eval_steps 100 \
+                --template mistral \
+                --finetuning_type full \
+                --output_dir output/$STAGE/$attacker_run_name/ \
+                --overwrite_output_dir \
+                --per_device_train_batch_size ${PER_DEVICE_TRAIN_BATCH_SIZE} \
+                --per_device_eval_batch_size ${PER_DEVICE_TRAIN_BATCH_SIZE} \
+                --gradient_accumulation_steps ${GRADIENT_ACCUMULATION_STEPS} \
+                --lr_scheduler_type cosine \
+                --warmup_ratio 0.1 \
+                --learning_rate $learning_rate \
+                --num_train_epochs 1.0 \
+                --top_k 0 \
+                --top_p 0.9 \
+                --logging_first_step \
+                --logging_steps 5 \
+                --run_name $STAGE-$attacker_run_name \
+                --save_steps 1000 \
+                --plot_loss \
+                --bf16 \
+                --seed 42 \
+                --flash_attn fa2 \
+                --pref_loss $pref_loss \
+                --pref_beta $pref_beta \
+                --simpo_gamma $simpo_gamma \
+            "
+            echo -e "\n\n\n======================================================\n\n\n" | tee -a $log_file
+            echo "Iteration $iter, running command: Step $step: (attempt: $attempt): \"$CMD\"" | tee -a $log_file
+            bash -c "$CMD"  2>&1 | tee -a $log_file
+            
+            cmd_status=${PIPESTATUS[0]}  # Get the exit status of the bash command, not tee
+            if [ $cmd_status -eq 0 ]; then
+                echo "Command succeeded on iter $iter step $step attempt $attempt" | tee -a $log_file
+                step=$((step+1))
+                break
+            else
+                echo "Command failed on iter $iter step $step attempt $attempt with status $cmd_status" | tee -a $log_file
+                attempt=$((attempt+1))
+                if [ $attempt -lt $RETRY_LIMIT ]; then
+                    echo "Sleeping for $RETRY_DELAY seconds before retrying..." | tee -a $log_file
+                    sleep $RETRY_DELAY
+                else
+                    echo "Reached maximum number of attempts. Exiting..." | tee -a $log_file
+                    exit 1
+                fi
+            fi
+        done
+
+        # Step 4. Train the defender model
+        attempt=0
+        until [ $attempt -ge $RETRY_LIMIT ]
+        do
+            if [ $step -lt $start_step ] && [ $iter -eq $start_iter ]; then
+                echo "Skipping step $step on iter $iter"
+                step=$((step+1))
+                break
+            fi
+            STAGE=dpo
+            model_name_or_path=$reference_defender_model
+            dataset_name=adversarial-$iter-$defender_dataset_suffix
+            defender_run_name="auto-mistral_7b-$dataset_name-$pref_loss"
+
+            TOTAL_BATCHSIZE=512
+            PER_DEVICE_TRAIN_BATCH_SIZE=8
+            GRADIENT_ACCUMULATION_STEPS=$(($TOTAL_BATCHSIZE / $NNODES / $GPUS_PER_NODE / $PER_DEVICE_TRAIN_BATCH_SIZE))
+            # check if TOTAL_BATCHSIZE is divisible by (NNODES * GPUS_PER_NODE * PER_DEVICE_TRAIN_BATCH_SIZE)
+            if [ $(($GRADIENT_ACCUMULATION_STEPS * $NNODES * $GPUS_PER_NODE * $PER_DEVICE_TRAIN_BATCH_SIZE)) -ne $TOTAL_BATCHSIZE ]; then
+                echo "TOTAL_BATCHSIZE: ${TOTAL_BATCHSIZE} is not divisible by (NNODES * GPUS_PER_NODE * PER_DEVICE_TRAIN_BATCH_SIZE): $(($NNODES * $GPUS_PER_NODE * $PER_DEVICE_TRAIN_BATCH_SIZE))" | tee -a $log_file
+                exit 1
+            fi
+            echo "TOTAL_BATCHSIZE: ${TOTAL_BATCHSIZE}, PER_DEVICE_TRAIN_BATCH_SIZE, ${PER_DEVICE_TRAIN_BATCH_SIZE}, GRADIENT_ACCUMULATION_STEPS: ${GRADIENT_ACCUMULATION_STEPS}" | tee -a $log_file
+
+            CMD="
+            accelerate launch \
+                --config_file ${ACCELERATE_CONFIG_PATH} \
+                --main_process_ip ${MASTER_ADDR} \
+                --main_process_port ${MASTER_PORT} \
+                --num_processes ${NUM_PROCESSES} \
+                --num_machines ${NNODES} \
+                --machine_rank \$SLURM_PROCID \
+            src/train.py \
+                --stage $STAGE \
+                --do_train \
+                --do_eval \
+                --model_name_or_path ${model_name_or_path} \
+                --dataset ${dataset_name} \
+                --split train \
+                --val_size 0.05 \
+                --preprocessing_num_workers 4 \
+                --dataloader_num_workers 8 \
+                --overwrite_cache \
+                --evaluation_strategy steps \
+                --eval_steps 100 \
+                --template mistral \
+                --finetuning_type full \
+                --output_dir output/$STAGE/$defender_run_name/ \
+                --overwrite_output_dir \
+                --per_device_train_batch_size ${PER_DEVICE_TRAIN_BATCH_SIZE} \
+                --per_device_eval_batch_size ${PER_DEVICE_TRAIN_BATCH_SIZE} \
+                --gradient_accumulation_steps ${GRADIENT_ACCUMULATION_STEPS} \
+                --lr_scheduler_type cosine \
+                --warmup_ratio 0.1 \
+                --learning_rate $learning_rate \
+                --num_train_epochs 1.0 \
+                --top_k 0 \
+                --top_p 0.9 \
+                --logging_first_step \
+                --logging_steps 5 \
+                --run_name $STAGE-$defender_run_name \
+                --save_steps 1000 \
+                --plot_loss \
+                --bf16 \
+                --seed 42 \
+                --flash_attn fa2 \
+                --pref_loss $pref_loss \
+                --pref_beta $pref_beta \
+                --simpo_gamma $simpo_gamma \
+                
+            "
+            echo -e "\n\n\n======================================================\n\n\n" | tee -a $log_file
+            echo "Iteration $iter, running command: Step $step: (attempt: $attempt): \"$CMD\"" | tee -a $log_file
+            bash -c "$CMD"  2>&1 | tee -a $log_file
+            
+            cmd_status=${PIPESTATUS[0]}  # Get the exit status of the bash command, not tee
+            if [ $cmd_status -eq 0 ]; then
+                echo "Command succeeded on iter $iter step $step attempt $attempt" | tee -a $log_file
+                step=$((step+1))
+                break
+            else
+                echo "Command failed on iter $iter step $step attempt $attempt with status $cmd_status" | tee -a $log_file
+                attempt=$((attempt+1))
+                if [ $attempt -lt $RETRY_LIMIT ]; then
+                    echo "Sleeping for $RETRY_DELAY seconds before retrying..." | tee -a $log_file
+                    sleep $RETRY_DELAY
+                else
+                    echo "Reached maximum number of attempts. Exiting..." | tee -a $log_file
+                    exit 1
+                fi
+            fi
+        done
+
+        # Step 5. Train the baseline defender model
+        attempt=0
+        until [ $attempt -ge $RETRY_LIMIT ]
+        do
+            if [ $step -lt $start_step ] && [ $iter -eq $start_iter ]; then
+                echo "Skipping step $step on iter $iter"
+                step=$((step+1))
+                break
+            fi
+            STAGE=dpo
+            model_name_or_path=$baseline_defender_model
+            dataset_name=adversarial-$iter-baseline
+            baseline_run_name="auto-mistral_7b-$dataset_name-$pref_loss"
+
+            TOTAL_BATCHSIZE=512
+            PER_DEVICE_TRAIN_BATCH_SIZE=8
+            GRADIENT_ACCUMULATION_STEPS=$(($TOTAL_BATCHSIZE / $NNODES / $GPUS_PER_NODE / $PER_DEVICE_TRAIN_BATCH_SIZE))
+            # check if TOTAL_BATCHSIZE is divisible by (NNODES * GPUS_PER_NODE * PER_DEVICE_TRAIN_BATCH_SIZE)
+            if [ $(($GRADIENT_ACCUMULATION_STEPS * $NNODES * $GPUS_PER_NODE * $PER_DEVICE_TRAIN_BATCH_SIZE)) -ne $TOTAL_BATCHSIZE ]; then
+                echo "TOTAL_BATCHSIZE: ${TOTAL_BATCHSIZE} is not divisible by (NNODES * GPUS_PER_NODE * PER_DEVICE_TRAIN_BATCH_SIZE): $(($NNODES * $GPUS_PER_NODE * $PER_DEVICE_TRAIN_BATCH_SIZE))" | tee -a $log_file
+                exit 1
+            fi
+            echo "TOTAL_BATCHSIZE: ${TOTAL_BATCHSIZE}, PER_DEVICE_TRAIN_BATCH_SIZE, ${PER_DEVICE_TRAIN_BATCH_SIZE}, GRADIENT_ACCUMULATION_STEPS: ${GRADIENT_ACCUMULATION_STEPS}" | tee -a $log_file
+
+            CMD="
+            accelerate launch \
+                --config_file ${ACCELERATE_CONFIG_PATH} \
+                --main_process_ip ${MASTER_ADDR} \
+                --main_process_port ${MASTER_PORT} \
+                --num_processes ${NUM_PROCESSES} \
+                --num_machines ${NNODES} \
+                --machine_rank \$SLURM_PROCID \
+            src/train.py \
+                --stage $STAGE \
+                --do_train \
+                --do_eval \
+                --model_name_or_path ${model_name_or_path} \
+                --dataset adversarial-raw \
+                --split train \
+                --val_size 0.05 \
+                --preprocessing_num_workers 4 \
+                --dataloader_num_workers 8 \
+                --overwrite_cache \
+                --evaluation_strategy steps \
+                --eval_steps 100 \
+                --template mistral \
+                --finetuning_type full \
+                --output_dir output/$STAGE/$baseline_run_name/ \
+                --overwrite_output_dir \
+                --per_device_train_batch_size ${PER_DEVICE_TRAIN_BATCH_SIZE} \
+                --per_device_eval_batch_size ${PER_DEVICE_TRAIN_BATCH_SIZE} \
+                --gradient_accumulation_steps ${GRADIENT_ACCUMULATION_STEPS} \
+                --lr_scheduler_type cosine \
+                --warmup_ratio 0.1 \
+                --learning_rate $learning_rate \
+                --num_train_epochs 1.0 \
+                --top_k 0 \
+                --top_p 0.9 \
+                --logging_first_step \
+                --logging_steps 5 \
+                --run_name $STAGE-$baseline_run_name \
+                --save_steps 1000 \
+                --plot_loss \
+                --bf16 \
+                --seed 42 \
+                --flash_attn fa2 \
+                --pref_loss $pref_loss \
+                --pref_beta $pref_beta \
+                --simpo_gamma $simpo_gamma \
+                
+            "
+            echo -e "\n\n\n======================================================\n\n\n" | tee -a $log_file
+            echo "Iteration $iter, running command: Step $step: (attempt: $attempt): \"$CMD\"" | tee -a $log_file
+            bash -c "$CMD"  2>&1 | tee -a $log_file
+            
+            cmd_status=${PIPESTATUS[0]}  # Get the exit status of the bash command, not tee
+            if [ $cmd_status -eq 0 ]; then
+                echo "Command succeeded on iter $iter step $step attempt $attempt" | tee -a $log_file
+                step=$((step+1))
+                break
+            else
+                echo "Command failed on iter $iter step $step attempt $attempt with status $cmd_status" | tee -a $log_file
+                attempt=$((attempt+1))
+                if [ $attempt -lt $RETRY_LIMIT ]; then
+                    echo "Sleeping for $RETRY_DELAY seconds before retrying..." | tee -a $log_file
+                    sleep $RETRY_DELAY
+                else
+                    echo "Reached maximum number of attempts. Exiting..." | tee -a $log_file
+                    exit 1
+                fi
+            fi
+        done
+            
+        reference_attacker_model=output/$STAGE/$attacker_run_name
+        reference_defender_model=output/$STAGE/$defender_run_name
+        baseline_defender_model=output/$STAGE/$baseline_run_name
     fi
-    echo "Using reference_attacker_model: $reference_attacker_model" | tee -a $log_file
-    echo "Using reference_defender_model: $reference_defender_model" | tee -a $log_file
-    step=1
-
-    # Step 1. Generate harmful prompts
-    attempt=0
-    until [ $attempt -ge $RETRY_LIMIT ]
-    do
-        if [ $step -lt $start_step ] && [ $iter -eq $start_iter ]; then
-            echo "Skipping step $step on iter $iter"
-            step=$((step+1))
-            break
-        fi
-        CMD="
-        python scripts/generate_harmful_prompts.py \
-            --dataset_lists data/custom_dataset/hh_rlhf.py harmless \
-            --model $reference_attacker_model \
-            --tensor-parallel-size $GPUS_PER_NODE \
-            --num_train_samples -1 \
-            --num_test_samples -1 \
-            --num_generated_prompts 8 \
-            --prompt_ver v1 \
-            --output_dir $data_path/iterate-${iter}/prompt \
-            --disable-log-requests \
-        "
-        echo -e "\n\n\n======================================================\n\n\n" | tee -a $log_file
-        echo "Iteration: $iter (attempt: $attempt), running command: Step $step: $CMD" | tee -a $log_file
-        bash -c "$CMD"  2>&1 | tee -a $log_file
-
-        cmd_status=${PIPESTATUS[0]}  # Get the exit status of the bash command, not tee
-        if [ $cmd_status -eq 0 ]; then
-            echo "Command succeeded on iter $iter step $step attempt $attempt" | tee -a $log_file
-            step=$((step+1))
-            break
-        else
-            echo "Command failed on iter $iter step $step attempt $attempt with status $cmd_status" | tee -a $log_file
-            attempt=$((attempt+1))
-            if [ $attempt -lt $RETRY_LIMIT ]; then
-                echo "Sleeping for $RETRY_DELAY seconds before retrying..." | tee -a $log_file
-                sleep $RETRY_DELAY
-            else
-                echo "Reached maximum number of attempts. Exiting..." | tee -a $log_file
-                exit 1
-            fi
-        fi
-    done
-
-    # Step 2. Calculate prompt rewards
-    attempt=0
-    until [ $attempt -ge $RETRY_LIMIT ]
-    do
-        if [ $step -lt $start_step ] && [ $iter -eq $start_iter ]; then
-            echo "Skipping step $step on iter $iter"
-            step=$((step+1))
-            break
-        fi
-        CMD="
-        accelerate launch \
-            --multi_gpu \
-            --config_file ${ACCELERATE_CONFIG_PATH} \
-            --main_process_ip ${MASTER_ADDR} \
-            --main_process_port ${MASTER_PORT} \
-            --num_processes ${NUM_PROCESSES} \
-            --num_machines ${NNODES} \
-        scripts/calc_prompt_reward.py \
-            --stage sft \
-            --model_name_or_path $reference_defender_model \
-            --raw_data_path $data_path/iterate-${iter}/prompt \
-            --save_name $data_path/iterate-${iter}/score \
-            --batch_size 8 \
-            --preprocessing_num_workers 4 \
-            --dataloader_num_workers 8 \
-            --template mistral \
-            --cutoff_len 2048 \
-            --bf16 \
-            --flash_attn off \
-            --beta 1 \
-        "
-        echo -e "\n\n\n======================================================\n\n\n" | tee -a $log_file
-        echo "Iteration: $iter (attempt: $attempt), running command: Step $step: $CMD" | tee -a $log_file
-        bash -c "$CMD"  2>&1 | tee -a $log_file
-
-        cmd_status=${PIPESTATUS[0]}  # Get the exit status of the bash command, not tee
-        if [ $cmd_status -eq 0 ]; then
-            echo "Command succeeded on iter $iter step $step attempt $attempt" | tee -a $log_file
-            step=$((step+1))
-            break
-        else
-            echo "Command failed on iter $iter step $step attempt $attempt with status $cmd_status" | tee -a $log_file
-            attempt=$((attempt+1))
-            if [ $attempt -lt $RETRY_LIMIT ]; then
-                echo "Sleeping for $RETRY_DELAY seconds before retrying..." | tee -a $log_file
-                sleep $RETRY_DELAY
-            else
-                echo "Reached maximum number of attempts. Exiting..." | tee -a $log_file
-                exit 1
-            fi
-        fi
-    done
-
-    # Step 3. Train the attacker model
-    attempt=0
-    until [ $attempt -ge $RETRY_LIMIT ]
-    do
-        if [ $step -lt $start_step ] && [ $iter -eq $start_iter ]; then
-            echo "Skipping step $step on iter $iter"
-            step=$((step+1))
-            break
-        fi
-        STAGE=dpo
-        model_name_or_path=$reference_attacker_model
-        dataset_name=adversarial-$iter-attacker
-        attacker_run_name="auto-mistral_7b-$dataset_name-$pref_loss"
-
-        TOTAL_BATCHSIZE=512
-        PER_DEVICE_TRAIN_BATCH_SIZE=4
-        GRADIENT_ACCUMULATION_STEPS=$(($TOTAL_BATCHSIZE / $NNODES / $GPUS_PER_NODE / $PER_DEVICE_TRAIN_BATCH_SIZE))
-        # check if TOTAL_BATCHSIZE is divisible by (NNODES * GPUS_PER_NODE * PER_DEVICE_TRAIN_BATCH_SIZE)
-        if [ $(($GRADIENT_ACCUMULATION_STEPS * $NNODES * $GPUS_PER_NODE * $PER_DEVICE_TRAIN_BATCH_SIZE)) -ne $TOTAL_BATCHSIZE ]; then
-            echo "TOTAL_BATCHSIZE: ${TOTAL_BATCHSIZE} is not divisible by (NNODES * GPUS_PER_NODE * PER_DEVICE_TRAIN_BATCH_SIZE): $(($NNODES * $GPUS_PER_NODE * $PER_DEVICE_TRAIN_BATCH_SIZE))" | tee -a $log_file
-            exit 1
-        fi
-        echo "TOTAL_BATCHSIZE: ${TOTAL_BATCHSIZE}, PER_DEVICE_TRAIN_BATCH_SIZE, ${PER_DEVICE_TRAIN_BATCH_SIZE}, GRADIENT_ACCUMULATION_STEPS: ${GRADIENT_ACCUMULATION_STEPS}" | tee -a $log_file
-
-        CMD="
-        accelerate launch \
-            --config_file ${ACCELERATE_CONFIG_PATH} \
-            --main_process_ip ${MASTER_ADDR} \
-            --main_process_port ${MASTER_PORT} \
-            --num_processes ${NUM_PROCESSES} \
-            --num_machines ${NNODES} \
-            --machine_rank \$SLURM_PROCID \
-        src/train.py \
-            --stage $STAGE \
-            --do_train \
-            --do_eval \
-            --model_name_or_path ${model_name_or_path} \
-            --dataset ${dataset_name} \
-            --split train \
-            --val_size 0.05 \
-            --cutoff_len 2048 \
-            --preprocessing_num_workers 4 \
-            --dataloader_num_workers 8 \
-            --overwrite_cache \
-            --evaluation_strategy steps \
-            --eval_steps 100 \
-            --template mistral \
-            --finetuning_type full \
-            --output_dir output/$STAGE/$attacker_run_name/ \
-            --overwrite_output_dir \
-            --per_device_train_batch_size ${PER_DEVICE_TRAIN_BATCH_SIZE} \
-            --per_device_eval_batch_size ${PER_DEVICE_TRAIN_BATCH_SIZE} \
-            --gradient_accumulation_steps ${GRADIENT_ACCUMULATION_STEPS} \
-            --lr_scheduler_type cosine \
-            --warmup_ratio 0.1 \
-            --learning_rate $learning_rate \
-            --num_train_epochs 1.0 \
-            --top_k 0 \
-            --top_p 0.9 \
-            --logging_first_step \
-            --logging_steps 5 \
-            --run_name $STAGE-$attacker_run_name \
-            --save_steps 1000 \
-            --plot_loss \
-            --bf16 \
-            --seed 42 \
-            --flash_attn fa2 \
-            --pref_loss $pref_loss \
-            --pref_beta $pref_beta \
-            --simpo_gamma $simpo_gamma \
-        "
-        echo -e "\n\n\n======================================================\n\n\n" | tee -a $log_file
-        echo "Iteration: $iter (attempt: $attempt), running command: Step $step: $CMD" | tee -a $log_file
-        bash -c "$CMD"  2>&1 | tee -a $log_file
-        
-        cmd_status=${PIPESTATUS[0]}  # Get the exit status of the bash command, not tee
-        if [ $cmd_status -eq 0 ]; then
-            echo "Command succeeded on iter $iter step $step attempt $attempt" | tee -a $log_file
-            step=$((step+1))
-            break
-        else
-            echo "Command failed on iter $iter step $step attempt $attempt with status $cmd_status" | tee -a $log_file
-            attempt=$((attempt+1))
-            if [ $attempt -lt $RETRY_LIMIT ]; then
-                echo "Sleeping for $RETRY_DELAY seconds before retrying..." | tee -a $log_file
-                sleep $RETRY_DELAY
-            else
-                echo "Reached maximum number of attempts. Exiting..." | tee -a $log_file
-                exit 1
-            fi
-        fi
-    done
-
-    # Step 4. Train the defender model
-    attempt=0
-    until [ $attempt -ge $RETRY_LIMIT ]
-    do
-        if [ $step -lt $start_step ] && [ $iter -eq $start_iter ]; then
-            echo "Skipping step $step on iter $iter"
-            step=$((step+1))
-            break
-        fi
-        STAGE=dpo
-        model_name_or_path=$reference_defender_model
-        dataset_name=adversarial-$iter-$defender_dataset_suffix
-        defender_run_name="auto-mistral_7b-$dataset_name-$pref_loss"
-
-        TOTAL_BATCHSIZE=512
-        PER_DEVICE_TRAIN_BATCH_SIZE=8
-        GRADIENT_ACCUMULATION_STEPS=$(($TOTAL_BATCHSIZE / $NNODES / $GPUS_PER_NODE / $PER_DEVICE_TRAIN_BATCH_SIZE))
-        # check if TOTAL_BATCHSIZE is divisible by (NNODES * GPUS_PER_NODE * PER_DEVICE_TRAIN_BATCH_SIZE)
-        if [ $(($GRADIENT_ACCUMULATION_STEPS * $NNODES * $GPUS_PER_NODE * $PER_DEVICE_TRAIN_BATCH_SIZE)) -ne $TOTAL_BATCHSIZE ]; then
-            echo "TOTAL_BATCHSIZE: ${TOTAL_BATCHSIZE} is not divisible by (NNODES * GPUS_PER_NODE * PER_DEVICE_TRAIN_BATCH_SIZE): $(($NNODES * $GPUS_PER_NODE * $PER_DEVICE_TRAIN_BATCH_SIZE))" | tee -a $log_file
-            exit 1
-        fi
-        echo "TOTAL_BATCHSIZE: ${TOTAL_BATCHSIZE}, PER_DEVICE_TRAIN_BATCH_SIZE, ${PER_DEVICE_TRAIN_BATCH_SIZE}, GRADIENT_ACCUMULATION_STEPS: ${GRADIENT_ACCUMULATION_STEPS}" | tee -a $log_file
-
-        CMD="
-        accelerate launch \
-            --config_file ${ACCELERATE_CONFIG_PATH} \
-            --main_process_ip ${MASTER_ADDR} \
-            --main_process_port ${MASTER_PORT} \
-            --num_processes ${NUM_PROCESSES} \
-            --num_machines ${NNODES} \
-            --machine_rank \$SLURM_PROCID \
-        src/train.py \
-            --stage $STAGE \
-            --do_train \
-            --do_eval \
-            --model_name_or_path ${model_name_or_path} \
-            --dataset ${dataset_name} \
-            --split train \
-            --val_size 0.05 \
-            --preprocessing_num_workers 4 \
-            --dataloader_num_workers 8 \
-            --overwrite_cache \
-            --evaluation_strategy steps \
-            --eval_steps 100 \
-            --template mistral \
-            --finetuning_type full \
-            --output_dir output/$STAGE/$defender_run_name/ \
-            --overwrite_output_dir \
-            --per_device_train_batch_size ${PER_DEVICE_TRAIN_BATCH_SIZE} \
-            --per_device_eval_batch_size ${PER_DEVICE_TRAIN_BATCH_SIZE} \
-            --gradient_accumulation_steps ${GRADIENT_ACCUMULATION_STEPS} \
-            --lr_scheduler_type cosine \
-            --warmup_ratio 0.1 \
-            --learning_rate $learning_rate \
-            --num_train_epochs 1.0 \
-            --top_k 0 \
-            --top_p 0.9 \
-            --logging_first_step \
-            --logging_steps 5 \
-            --run_name $STAGE-$defender_run_name \
-            --save_steps 1000 \
-            --plot_loss \
-            --bf16 \
-            --seed 42 \
-            --flash_attn fa2 \
-            --pref_loss $pref_loss \
-            --pref_beta $pref_beta \
-            --simpo_gamma $simpo_gamma \
-            
-        "
-        echo -e "\n\n\n======================================================\n\n\n" | tee -a $log_file
-        echo "Iteration: $iter (attempt: $attempt), running command: Step $step: $CMD" | tee -a $log_file
-        bash -c "$CMD"  2>&1 | tee -a $log_file
-        
-        cmd_status=${PIPESTATUS[0]}  # Get the exit status of the bash command, not tee
-        if [ $cmd_status -eq 0 ]; then
-            echo "Command succeeded on iter $iter step $step attempt $attempt" | tee -a $log_file
-            step=$((step+1))
-            break
-        else
-            echo "Command failed on iter $iter step $step attempt $attempt with status $cmd_status" | tee -a $log_file
-            attempt=$((attempt+1))
-            if [ $attempt -lt $RETRY_LIMIT ]; then
-                echo "Sleeping for $RETRY_DELAY seconds before retrying..." | tee -a $log_file
-                sleep $RETRY_DELAY
-            else
-                echo "Reached maximum number of attempts. Exiting..." | tee -a $log_file
-                exit 1
-            fi
-        fi
-    done
-
-    # Step 5. Train the baseline defender model
-    attempt=0
-    until [ $attempt -ge $RETRY_LIMIT ]
-    do
-        if [ $step -lt $start_step ] && [ $iter -eq $start_iter ]; then
-            echo "Skipping step $step on iter $iter"
-            step=$((step+1))
-            break
-        fi
-        STAGE=dpo
-        model_name_or_path=$baseline_defender_model
-        dataset_name=adversarial-$iter-baseline
-        baseline_run_name="auto-mistral_7b-$dataset_name-$pref_loss"
-
-        TOTAL_BATCHSIZE=512
-        PER_DEVICE_TRAIN_BATCH_SIZE=8
-        GRADIENT_ACCUMULATION_STEPS=$(($TOTAL_BATCHSIZE / $NNODES / $GPUS_PER_NODE / $PER_DEVICE_TRAIN_BATCH_SIZE))
-        # check if TOTAL_BATCHSIZE is divisible by (NNODES * GPUS_PER_NODE * PER_DEVICE_TRAIN_BATCH_SIZE)
-        if [ $(($GRADIENT_ACCUMULATION_STEPS * $NNODES * $GPUS_PER_NODE * $PER_DEVICE_TRAIN_BATCH_SIZE)) -ne $TOTAL_BATCHSIZE ]; then
-            echo "TOTAL_BATCHSIZE: ${TOTAL_BATCHSIZE} is not divisible by (NNODES * GPUS_PER_NODE * PER_DEVICE_TRAIN_BATCH_SIZE): $(($NNODES * $GPUS_PER_NODE * $PER_DEVICE_TRAIN_BATCH_SIZE))" | tee -a $log_file
-            exit 1
-        fi
-        echo "TOTAL_BATCHSIZE: ${TOTAL_BATCHSIZE}, PER_DEVICE_TRAIN_BATCH_SIZE, ${PER_DEVICE_TRAIN_BATCH_SIZE}, GRADIENT_ACCUMULATION_STEPS: ${GRADIENT_ACCUMULATION_STEPS}" | tee -a $log_file
-
-        CMD="
-        accelerate launch \
-            --config_file ${ACCELERATE_CONFIG_PATH} \
-            --main_process_ip ${MASTER_ADDR} \
-            --main_process_port ${MASTER_PORT} \
-            --num_processes ${NUM_PROCESSES} \
-            --num_machines ${NNODES} \
-            --machine_rank \$SLURM_PROCID \
-        src/train.py \
-            --stage $STAGE \
-            --do_train \
-            --do_eval \
-            --model_name_or_path ${model_name_or_path} \
-            --dataset adversarial-raw \
-            --split train \
-            --val_size 0.05 \
-            --preprocessing_num_workers 4 \
-            --dataloader_num_workers 8 \
-            --overwrite_cache \
-            --evaluation_strategy steps \
-            --eval_steps 100 \
-            --template mistral \
-            --finetuning_type full \
-            --output_dir output/$STAGE/$baseline_run_name/ \
-            --overwrite_output_dir \
-            --per_device_train_batch_size ${PER_DEVICE_TRAIN_BATCH_SIZE} \
-            --per_device_eval_batch_size ${PER_DEVICE_TRAIN_BATCH_SIZE} \
-            --gradient_accumulation_steps ${GRADIENT_ACCUMULATION_STEPS} \
-            --lr_scheduler_type cosine \
-            --warmup_ratio 0.1 \
-            --learning_rate $learning_rate \
-            --num_train_epochs 1.0 \
-            --top_k 0 \
-            --top_p 0.9 \
-            --logging_first_step \
-            --logging_steps 5 \
-            --run_name $STAGE-$baseline_run_name \
-            --save_steps 1000 \
-            --plot_loss \
-            --bf16 \
-            --seed 42 \
-            --flash_attn fa2 \
-            --pref_loss $pref_loss \
-            --pref_beta $pref_beta \
-            --simpo_gamma $simpo_gamma \
-            
-        "
-        echo -e "\n\n\n======================================================\n\n\n" | tee -a $log_file
-        echo "Iteration: $iter (attempt: $attempt), running command: Step $step: $CMD" | tee -a $log_file
-        bash -c "$CMD"  2>&1 | tee -a $log_file
-        
-        cmd_status=${PIPESTATUS[0]}  # Get the exit status of the bash command, not tee
-        if [ $cmd_status -eq 0 ]; then
-            echo "Command succeeded on iter $iter step $step attempt $attempt" | tee -a $log_file
-            step=$((step+1))
-            break
-        else
-            echo "Command failed on iter $iter step $step attempt $attempt with status $cmd_status" | tee -a $log_file
-            attempt=$((attempt+1))
-            if [ $attempt -lt $RETRY_LIMIT ]; then
-                echo "Sleeping for $RETRY_DELAY seconds before retrying..." | tee -a $log_file
-                sleep $RETRY_DELAY
-            else
-                echo "Reached maximum number of attempts. Exiting..." | tee -a $log_file
-                exit 1
-            fi
-        fi
-    done
-        
-    reference_attacker_model=output/$STAGE/$attacker_run_name
-    reference_defender_model=output/$STAGE/$defender_run_name
-    baseline_defender_model=output/$STAGE/$baseline_run_name
-
 done

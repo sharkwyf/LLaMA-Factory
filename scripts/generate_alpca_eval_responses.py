@@ -54,9 +54,44 @@ class VLLMEngineArgs(AsyncEngineArgs):
 
 console = Console()
 
-async def run_request(chat_serving: OpenAIServingChat,
-                      request: BatchRequestInput,
-                      pbar) -> BatchRequestOutput:
+async def run_request(
+        args: ScriptArguments,
+        engine_args: VLLMEngineArgs,
+        i: int,
+        chat_serving: OpenAIServingChat,
+        example: dict,
+        pbar) -> BatchRequestOutput:
+    
+    instruction = example["instruction"]
+    messages = [
+        {
+            "role": "user",
+            "content": instruction,
+        }
+    ]
+
+    request = BatchRequestInput(
+        custom_id = f"{i}",
+        method = "POST",
+        url = "/v1/chat/completions",
+        body = ChatCompletionRequest(
+            **{
+                "messages": messages,
+                "model": engine_args.model,
+                "n": args.num_generated_responses,
+                "stream": False,
+                "max_tokens": 2048,
+                "temperature": 0.3,
+                "top_p": 0.5,
+                "frequency_penalty": 1.1,
+                "stop": ["</s>", "<|im_end|>"],
+                # "stop_token_ids": [128009],
+                # "include_stop_str_in_output": True,
+                # "skip_special_tokens": False,
+            }
+        )
+    )
+    
     chat_request = request.body
     chat_response = await chat_serving.create_chat_completion(chat_request)
     if isinstance(chat_response, ChatCompletionResponse):
@@ -74,7 +109,7 @@ async def run_request(chat_serving: OpenAIServingChat,
             error=chat_response,
         )
     pbar.update(1)
-    return batch_output
+    return example, batch_output
 
 async def main(args: ScriptArguments, engine_args: VLLMEngineArgs):
     set_seed(seed=engine_args.seed)
@@ -111,43 +146,13 @@ async def main(args: ScriptArguments, engine_args: VLLMEngineArgs):
         raise ValueError(f"Invalid dataset name: {args.dataset}")
 
     if args.max_samples > 0:
-        data = data.select(range(args.max_samples)) 
+        data = data.select(range(args.max_samples))
 
     # Submit all requests in the file to the engine "concurrently".
     response_futures: List[Awaitable[BatchRequestOutput]] = []
     pbar = tqdm_async(total=len(data))
     for i, example in enumerate(data):
-        instruction = example["instruction"]
-        messages = [
-            {
-                "role": "user",
-                "content": instruction,
-            }
-        ]
-
-        request = BatchRequestInput(
-            custom_id = f"{i}",
-            method = "POST",
-            url = "/v1/chat/completions",
-            body = ChatCompletionRequest(
-                **{
-                    "messages": messages,
-                    "model": engine_args.model,
-                    "n": args.num_generated_responses,
-                    "stream": False,
-                    "max_tokens": 2048,
-                    "temperature": 0.3,
-                    "top_p": 0.5,
-                    "frequency_penalty": 1.1,
-                    "stop": ["</s>", "<|im_end|>"],
-                    # "stop_token_ids": [128009],
-                    # "include_stop_str_in_output": True,
-                    # "skip_special_tokens": False,
-                }
-            )
-        )
-
-        response_futures.append(run_request(openai_serving_chat, request, pbar))
+        response_futures.append(run_request(args, engine_args, i, openai_serving_chat, example, pbar))
     
     pbar.total = len(response_futures)
     chunk_size = 1000
@@ -157,8 +162,10 @@ async def main(args: ScriptArguments, engine_args: VLLMEngineArgs):
         chunk = response_futures[i:i+chunk_size]
         responses.extend(await asyncio.gather(*chunk))
 
+    # import ipdb; ipdb.set_trace()
+
     results = []
-    for response in responses:
+    for example, response in responses:
         i = int(response.custom_id)
         example = {
             "instruction": example["instruction"],
