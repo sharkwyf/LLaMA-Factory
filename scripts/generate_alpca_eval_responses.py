@@ -155,7 +155,7 @@ async def main(args: ScriptArguments, engine_args: VLLMEngineArgs):
         response_futures.append(run_request(args, engine_args, i, openai_serving_chat, example, pbar))
     
     pbar.total = len(response_futures)
-    chunk_size = 1000
+    chunk_size = 1024
     print(f"Start processing in batch size: {chunk_size}")
     responses = []
     for i in range(0, len(response_futures), chunk_size):

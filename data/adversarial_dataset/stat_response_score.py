@@ -10,7 +10,6 @@ from rich.console import Console
 from rich.table import Table
 from rich import print
 from dataclasses import dataclass, field
-from transformers import set_seed
 from tqdm import tqdm
 from datetime import datetime
 from functools import partial
@@ -18,46 +17,35 @@ from datasets import load_dataset, concatenate_datasets
 from typing import List
 
 prefix_path = "data/adversarial_dataset/exp"
+max_iters = 30
 
 @dataclass(kw_only=True)
 class ScriptArguments:
     data_path: List[str] = field(default_factory=lambda: [
         # attacker
         f"{prefix_path}/eval/prompt-base",
-        f"{prefix_path}/eval/prompt-iterate-1",
-        f"{prefix_path}/eval/prompt-iterate-2",
-        f"{prefix_path}/eval/prompt-iterate-3",
-        f"{prefix_path}/eval/prompt-iterate-4",
-        
-        "section_line",
+        *[
+            f"{prefix_path}/eval/prompt-iterate-{i}"
+            for i in range(1, 1 + max_iters)
+        ],
 
         # baseline
+        "section_line",
         f"{prefix_path}/eval/response-mistral",
         f"{prefix_path}/eval/response-base-baseline",
-        f"{prefix_path}/eval/response-adversarial-1-baseline",
-        f"{prefix_path}/eval/response-adversarial-2-baseline",
-        f"{prefix_path}/eval/response-adversarial-3-baseline",
-        f"{prefix_path}/eval/response-adversarial-4-baseline",
-        
-        "section_line",
+        *[
+            f"{prefix_path}/eval/response-adversarial-{i}-baseline"
+            for i in range(1, 1 + max_iters)
+        ],
 
         # defender
-        f"{prefix_path}/eval/response-mistral",
-        f"{prefix_path}/eval/response-base-defender",
-        f"{prefix_path}/eval/response-adversarial-1-defender",
-        f"{prefix_path}/eval/response-adversarial-2-defender",
-        f"{prefix_path}/eval/response-adversarial-3-defender",
-        f"{prefix_path}/eval/response-adversarial-4-defender",
-        
         "section_line",
-        
-        # defender-mixed
         f"{prefix_path}/eval/response-mistral",
         f"{prefix_path}/eval/response-base-defender",
-        f"{prefix_path}/eval/response-adversarial-1-defender-mixed",
-        f"{prefix_path}/eval/response-adversarial-2-defender-mixed",
-        f"{prefix_path}/eval/response-adversarial-3-defender-mixed",
-        f"{prefix_path}/eval/response-adversarial-4-defender-mixed",
+        *[
+            f"{prefix_path}/eval/response-adversarial-{i}-defender"
+            for i in range(1, 1 + max_iters)
+        ],
     ])
     seed: int = field(default=42)
 
@@ -67,7 +55,7 @@ console = Console()
 script_args = tyro.cli(ScriptArguments)
 print(script_args)
 
-set_seed(seed=script_args.seed)
+# set_seed(seed=script_args.seed)
 
 table = Table(title="Harmful Prompts Statistics", title_style="bold magenta")
 
@@ -94,7 +82,7 @@ for path in script_args.data_path:
         skipped_cnt = 0
 
         for example in data:
-            for harmful_item in example["harmful_prompts"]:
+            for harmful_item in example["generated_prompts"]:
                 if "generated_responses" not in harmful_item:
                     continue
                 for response_item in harmful_item["generated_responses"]:

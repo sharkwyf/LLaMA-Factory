@@ -10,7 +10,6 @@ from rich.console import Console
 from rich.table import Table
 from rich import print
 from dataclasses import dataclass, field
-from transformers import set_seed
 from tqdm import tqdm
 from datetime import datetime
 from functools import partial
@@ -18,26 +17,24 @@ from datasets import load_dataset, concatenate_datasets
 from typing import List
 
 prefix_path = "data/adversarial_dataset/exp"
+max_iters = 30
 
 @dataclass(kw_only=True)
 class ScriptArguments:
     data_path: List[str] = field(default_factory=lambda: [
         # attacker
         f"{prefix_path}/eval/score-base",
-        f"{prefix_path}/eval/score-iterate-1",
-        f"{prefix_path}/eval/score-iterate-2",
-        f"{prefix_path}/eval/score-iterate-3",
-        f"{prefix_path}/eval/score-iterate-4",
+        *[
+            f"{prefix_path}/eval/score-iterate-{i}"
+            for i in range(1, 1 + max_iters)
+        ],
 
+        # attacker vs previous defender
         "section_line",
-
-        # defender
-        # f"{prefix_path}/eval/score-base",
-        # f"{prefix_path}/eval/score-iterate-1",
-        # f"{prefix_path}/eval/score-iterate-2",
-        # f"{prefix_path}/eval/score-iterate-3",
-        # f"{prefix_path}/eval/score-iterate-4",
-
+        *[
+            f"{prefix_path}/eval/score-iterate-{i}-prev"
+            for i in range(1, 1 + max_iters)
+        ],
     ])
     seed: int = field(default=42)
 
@@ -47,7 +44,7 @@ console = Console()
 script_args = tyro.cli(ScriptArguments)
 print(script_args)
 
-set_seed(seed=script_args.seed)
+# set_seed(seed=script_args.seed)
 
 table = Table(title="Harmful Prompts Statistics", title_style="bold magenta")
 
@@ -86,15 +83,15 @@ for path in script_args.data_path:
                 continue
             base_rewards.append([example["chosen_reward"], example["rejected_reward"]])
 
-            harmful_items = [item for item in example["harmful_prompts"] if "chosen_reward" in item and "rejected_reward" in item]
-            if len(harmful_items) < len(example["harmful_prompts"]):
-                skipped_cnt += len(example["harmful_prompts"]) -  len(harmful_items)
-                print(f'Skipped harmful prompt: {[item for item in example["harmful_prompts"] if not ("chosen_reward" in item and "rejected_reward" in item)]}')
-            harmful_items = sorted(harmful_items, key=lambda x: x["chosen_reward"] - x["rejected_reward"])
-            first_rewards.append([harmful_items[0]["chosen_reward"], harmful_items[0]["rejected_reward"]])
-            last_rewards.append([harmful_items[-1]["chosen_reward"], harmful_items[-1]["rejected_reward"]])
+            generated_items = [item for item in example["generated_prompts"] if "chosen_reward" in item and "rejected_reward" in item]
+            if len(generated_items) < len(example["generated_prompts"]):
+                skipped_cnt += len(example["generated_prompts"]) -  len(generated_items)
+                print(f'Skipped harmful prompt: {[item for item in example["generated_prompts"] if not ("chosen_reward" in item and "rejected_reward" in item)]}')
+            generated_items = sorted(generated_items, key=lambda x: x["chosen_reward"] - x["rejected_reward"])
+            first_rewards.append([generated_items[0]["chosen_reward"], generated_items[0]["rejected_reward"]])
+            last_rewards.append([generated_items[-1]["chosen_reward"], generated_items[-1]["rejected_reward"]])
 
-            for harmful_item in harmful_items:
+            for harmful_item in generated_items:
                 chosen, rejected = harmful_item["chosen_reward"], harmful_item["rejected_reward"]
                 all_harmful_rewards.append([chosen, rejected])
                 all_cnt += 1

@@ -106,7 +106,7 @@ async def main(args: ScriptArguments, engine_args: VLLMEngineArgs):
         for i, example in enumerate(data):
             instruction = example["instruction"]
             history = example["history"]
-            harmful_items = example["harmful_prompts"]
+            generated_items = example["generated_prompts"]
 
             history_messages = []
             for user, assistant in history:
@@ -121,7 +121,7 @@ async def main(args: ScriptArguments, engine_args: VLLMEngineArgs):
                     }
                 ])
 
-            for j, harmful_item in enumerate(harmful_items[:args.num_prompts_per_example]):
+            for j, harmful_item in enumerate(generated_items[:args.num_prompts_per_example]):
                 messages = history_messages + [
                     {
                         "role": "user",
@@ -154,7 +154,7 @@ async def main(args: ScriptArguments, engine_args: VLLMEngineArgs):
                 response_futures.append(run_request(openai_serving_chat, request, pbar))
         
         pbar.total = len(response_futures)
-        chunk_size = 1000
+        chunk_size = 1024
         print(f"Start processing in batch size: {chunk_size}")
         responses = []
         for i in range(0, len(response_futures), chunk_size):
@@ -166,7 +166,7 @@ async def main(args: ScriptArguments, engine_args: VLLMEngineArgs):
             match = re.match(pattern, response.custom_id)
             if match:
                 i, j = map(int, match.groups())
-                data[i]["harmful_prompts"][j]["generated_responses"] = [
+                data[i]["generated_prompts"][j]["generated_responses"] = [
                     {
                         "response": choice.message.content,
                     }

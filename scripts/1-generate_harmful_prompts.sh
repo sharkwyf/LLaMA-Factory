@@ -11,12 +11,12 @@ model_name_or_path=output/dpo/mistral_7b-adversarial-raw-sigmoid-adversarial-0-d
 dataset_name=iterate-3
 model_base_name=$(echo $model_name_or_path | awk -F'/' '{print $NF}')
 unset http_proxy; unset https_proxy; unset HTTP_PROXY; unset HTTPS_PROXY;
-python scripts/generate_harmful_prompts.py \
+python scripts/generate_prompts.py \
     --dataset_lists data/custom_dataset/hh_rlhf.py harmless \
     --model $model_name_or_path \
     --tensor-parallel-size $NUM_GPUS \
     --num_train_samples -1 \
     --num_test_samples -1 \
     --num_generated_prompts 16 \
-    --prompt_ver v1 \
+    --prompt_ver harmful-v1 \
     --output_dir data/adversarial_dataset/${dataset_name}/prompt-$model_base_name/ \

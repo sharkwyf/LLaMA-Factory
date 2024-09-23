@@ -15,7 +15,9 @@ import tyro
 import torch
 import torch.nn.functional as F
 from datasets import Dataset
+from datasets import load_dataset, concatenate_datasets
 from rich import print
+from rich.console import Console
 from accelerate import Accelerator, DistributedType
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -31,13 +33,17 @@ from llamafactory.data.processors.supervised import _encode_supervised_example
 from llamafactory.data.template import TEMPLATES
 
 
+console = Console()
+
 @dataclass(kw_only=True)
 class ScriptArguments:
     stage: str = field(default="sft")
     model_name_or_path: str = field(default="output/rm/mistral_7b-adversarial-raw-1")
-    raw_data_path: str = field(default="data/adversarial_dataset/iterate-0/harmful_response/")
+    dataset_lists: tuple[tuple[str, str], ...] = field(default_factory=lambda: [
+        ["./data/custom_dataset/hh_rlhf.py", "harmless"]
+    ])
     dataset_splits: tuple[Literal["train", "test"], ...] = field(default=("train", "test"))
-    save_name: str = field(default="data/adversarial_dataset/iterate-0/harmful_response_scored/")
+    save_name: str = field(default="data/relabeled_dataset/hh_rlhf_harmless")
     batch_size: int = field(default=8)
     preprocessing_num_workers: Optional[int] = field(default=1)
     dataloader_num_workers: Optional[int] = field(default=8)
@@ -45,6 +51,7 @@ class ScriptArguments:
     cutoff_len: int = field(default=2048)
     bf16: bool = field(default=False)
     flash_attn: Literal["off", "sdpa", "fa2", "auto"] = field(default="off")
+    sanity_check: bool = field(default=False)
 
 @dataclass
 class PairwiseDataCollatorWithPadding(DataCollatorForSeq2Seq):
@@ -68,78 +75,89 @@ class PairwiseDataCollatorWithPadding(DataCollatorForSeq2Seq):
         return batch, indices
 
 
-def main(args: ScriptArguments):
+def main(script_args: ScriptArguments):
     model_args, data_args, training_args, finetuning_args, _ = get_train_args(
         dict(
-            stage=args.stage,
-            model_name_or_path=args.model_name_or_path,
+            stage=script_args.stage,
+            model_name_or_path=script_args.model_name_or_path,
             dataset="alpaca_en_demo",
-            preprocessing_num_workers=args.preprocessing_num_workers,
-            dataloader_num_workers=args.dataloader_num_workers,
+            preprocessing_num_workers=script_args.preprocessing_num_workers,
+            dataloader_num_workers=script_args.dataloader_num_workers,
             dataset_dir="data",
-            template=args.template,
-            cutoff_len=args.cutoff_len,
+            template=script_args.template,
+            cutoff_len=script_args.cutoff_len,
             output_dir="dummy_dir",
-            bf16=args.bf16,
-            flash_attn=args.flash_attn,
+            bf16=script_args.bf16,
+            flash_attn=script_args.flash_attn,
         )
     )
 
     accelerator = Accelerator()
-    if accelerator.is_main_process:
-        print("Arguments: ", args)
-
     device = accelerator.device
+    if accelerator.is_main_process:
+        print("Arguments: ", script_args)
 
+    # Load dataset
+    console.print(f"Loading dataset {script_args.dataset_lists}")
+    dataset_lists = []
+    for dataset_name, subset in script_args.dataset_lists:
+        dataset = load_dataset(
+            path=dataset_name,
+            name=subset,
+            trust_remote_code=True,
+        )
+        dataset_lists.append(dataset)
+    
+    # Load tokenizer
     tokenizer_module = load_tokenizer(model_args)
     tokenizer = tokenizer_module["tokenizer"]
     model = load_model(tokenizer, model_args, finetuning_args, is_trainable=False, add_valuehead=True)
 
-    for split in args.dataset_splits:
-        with open(os.path.join(args.raw_data_path, f"{split}.json"), "r") as f:
-            raw_data = json.load(f)
-            
+    for split in script_args.dataset_splits:
+        if script_args.sanity_check:
+            all_items = concatenate_datasets([dataset[split] for dataset in dataset_lists]).select(range(10))
+        else:
+            all_items = concatenate_datasets([dataset[split] for dataset in dataset_lists])
+
         def gen():
             template = TEMPLATES.get(data_args.template, None)
-            for i, item in enumerate(raw_data):
+            for i, item in enumerate(all_items):
                 history = []
                 for old_prompt, old_response in item["history"]:
                     history.append({"role": Role.USER.value, "content": old_prompt})
                     history.append({"role": Role.ASSISTANT.value, "content": old_response})
-                for j, prompt_item in enumerate(item["generated_prompts"]):
-                    if "generated_responses" not in prompt_item:
-                        continue
-                    for k, response_item in enumerate(prompt_item["generated_responses"]):
-                        prompt = history + [{"role": Role.USER.value, "content": prompt_item["prompt"]}]
-                        response = [{"role": Role.ASSISTANT.value, "content": response_item["response"]}]
-                        system = ""
-                        tools = ""
+                prompt = history + [{"role": Role.USER.value, "content": item["instruction"]}]
 
-                        input_ids, labels = _encode_supervised_example(
-                            prompt=prompt,
-                            response=response,
-                            system=system,
-                            tools=tools,
-                            template=template,
-                            tokenizer=tokenizer,
-                            processor=None,
-                            data_args=data_args,
-                        )
-                                    
-                        yield {
-                            "index": (i, j, k),
-                            "input_ids": input_ids,
-                            "labels": labels,
-                        }
+                for j, response in enumerate([item["chosen"], item["rejected"]]):
+                    response = [{"role": Role.ASSISTANT.value, "content": response}]
+                    system = ""
+                    tools = ""
+
+                    input_ids, labels = _encode_supervised_example(
+                        prompt=prompt,
+                        response=response,
+                        system=system,
+                        tools=tools,
+                        template=template,
+                        tokenizer=tokenizer,
+                        processor=None,
+                        data_args=data_args,
+                    )
+                                
+                    yield {
+                        "index": (i, j),
+                        "input_ids": input_ids,
+                        "labels": labels,
+                    }
 
         dataset = Dataset.from_generator(gen, num_proc=data_args.preprocessing_num_workers)
-        print(f"Found {len(dataset)} responses to calculate rewards in {args.raw_data_path}/{split}.json")
+        print(f"Found {len(dataset)} responses to calculate rewards in {script_args.dataset_lists}/{split}.json")
 
         data_collator = PairwiseDataCollatorWithPadding(
             tokenizer=tokenizer, pad_to_multiple_of=8
         )
         
-        dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, collate_fn=data_collator, num_workers=args.dataloader_num_workers, pin_memory=True)
+        dataloader = DataLoader(dataset, batch_size=script_args.batch_size, shuffle=False, collate_fn=data_collator, num_workers=script_args.dataloader_num_workers, pin_memory=True)
 
         model, dataloader = accelerator.prepare(model, dataloader)
 
@@ -171,16 +189,33 @@ def main(args: ScriptArguments):
         gathered_change_list = accelerator.gather_for_metrics(change_list, use_gather_object=True)
                     
         if accelerator.is_main_process:
+            to_reverse = {}
             for index, score in tqdm(gathered_change_list, desc="Processing gathered inputs"):
-                i, j, k = index
-                raw_data[i]["generated_prompts"][j]["generated_responses"][k]["score"] = score
+                i, j = index
+                if i not in to_reverse:
+                    to_reverse[i] = {}
+                to_reverse[i][j] = score
+
+            results = []
+            total_cnt = 0
+            reversed_cnt = 0
+            for i, scores in to_reverse.items():
+                assert len(scores) == 2, f"Missing scores for item {i}"
+                chosen_score, rejected_score = scores[0], scores[1]
+                item = all_items[i]
+                item["chosen_score"], item["rejected_score"] = chosen_score, rejected_score
+                if chosen_score < rejected_score:
+                    reversed_cnt += 1
+                total_cnt += 1
+                results.append(item)
+            print(f"Reversed {reversed_cnt} out of {total_cnt} items on dataset {script_args.dataset_lists} with model: {script_args.model_name_or_path}")
             
-            save_path = os.path.join(args.save_name, f"{split}.json")
+            save_path = os.path.join(script_args.save_name, f"{split}.json")
             if not os.path.exists(save_path):
                 os.makedirs(os.path.dirname(save_path), exist_ok=True)
             with open(save_path, "w", encoding="utf-8") as f:
-                json.dump(raw_data, f, indent=4, ensure_ascii=False)
-            print("Labeled dataset have been saved at {}.".format(save_path))
+                json.dump(results, f, indent=4, ensure_ascii=False)
+            print("Relabeled dataset have been saved at {}.".format(save_path))
 
 
 if __name__ == "__main__":

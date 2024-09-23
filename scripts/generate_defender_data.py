@@ -54,7 +54,7 @@ dataset_paths = [
 def send_query(url, model_name, prompt_ver, num_generated_prompts, num_max_retries, item):
     try:
         try:
-            harmful_prompts = []
+            generated_prompts = []
             example = item["example"]
             question = example["instruction"]
             system_prompt = SYSTEM_PROMPT_TEMPLATE
@@ -82,7 +82,7 @@ def send_query(url, model_name, prompt_ver, num_generated_prompts, num_max_retri
             retry_cnt = 0
             while generated_cnt < num_generated_prompts:
                 if retry_cnt == num_max_retries:
-                    print(f"[Error]: Retried {retry_cnt} times, skip this example: {example}\ngenerated: {harmful_prompts}\n")
+                    print(f"[Error]: Retried {retry_cnt} times, skip this example: {example}\ngenerated: {generated_prompts}\n")
                     break
                 response = requests.post(
                     url=f"{url}/chat/completions",
@@ -91,8 +91,8 @@ def send_query(url, model_name, prompt_ver, num_generated_prompts, num_max_retri
                 generated_output = response.json()["choices"][0]["message"]["content"]
                 generated_output = generated_output.split("<question>")[1].strip()
                 retry_cnt += 1
-                if generated_output not in harmful_prompts:
-                    harmful_prompts.append(generated_output)
+                if generated_output not in generated_prompts:
+                    generated_prompts.append(generated_output)
                     generated_cnt += 1
                     retry_cnt = 0
         except Exception as ex:
@@ -102,11 +102,11 @@ def send_query(url, model_name, prompt_ver, num_generated_prompts, num_max_retri
                 print(f"[Error]: HTTP {response.status_code} - {response.reason}")
             except:
                 pass
-            harmful_prompts = f"[Error]: HTTP {response.status_code} - {response.reason} during process '{generated_output}'"
+            generated_prompts = f"[Error]: HTTP {response.status_code} - {response.reason} during process '{generated_output}'"
             raise ex
         finally:
             example["evaluate_prompt"] = evaluate_prompt
-            example["harmful_prompts"] = harmful_prompts
+            example["generated_prompts"] = generated_prompts
             return example
     except Exception as ex:
         print(f"[Error]: Uncaught error: {ex} during processing {item}")

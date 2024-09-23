@@ -22,7 +22,7 @@ from rich import print
 from llamafactory.extras.constants import IGNORE_INDEX
 from llamafactory.hparams import get_train_args
 from llamafactory.model import load_model, load_tokenizer
-from llamafactory.train.trainer_utils import create_custom_optimzer, create_custom_scheduler, get_batch_logps
+from llamafactory.train.trainer_utils import create_custom_optimzer, create_custom_scheduler, get_batch_logps, create_ref_model
 from llamafactory.data.data_utils import Role
 from llamafactory.data.processors.pairwise import _encode_pairwise_example
 from llamafactory.data.template import TEMPLATES
@@ -44,6 +44,7 @@ class ScriptArguments:
     bf16: bool = field(default=False)
     flash_attn: Optional[str] = field(default="fa2")
     beta: Optional[float] = field(default=1)
+    ref_model: str | None = field(default=None)
 
 @dataclass
 class PairwiseDataCollatorWithPadding(DataCollatorForSeq2Seq):
@@ -89,7 +90,7 @@ def process_item(args):
     for old_prompt, old_response in item["history"]:
         history.append({"role": Role.USER.value, "content": old_prompt})
         history.append({"role": Role.ASSISTANT.value, "content": old_response})
-    for j, instruction in enumerate([item["instruction"]] + [x["prompt"] for x in item["harmful_prompts"]]):
+    for j, instruction in enumerate([item["instruction"]] + [x["prompt"] for x in item["generated_prompts"]]):
         prompt = history + [{"role": Role.USER.value, "content": instruction}]
         response = [
             {"role": Role.ASSISTANT.value, "content": item["chosen"]},
@@ -145,6 +146,7 @@ def main(args: ScriptArguments):
             output_dir="dummy_dir",
             bf16=args.bf16,
             flash_attn=args.flash_attn,
+            ref_model=args.ref_model,
         )
     )
 
@@ -157,6 +159,12 @@ def main(args: ScriptArguments):
     tokenizer_module = load_tokenizer(model_args)
     tokenizer = tokenizer_module["tokenizer"]
     model = load_model(tokenizer, model_args, finetuning_args, is_trainable=False, add_valuehead=False)
+
+    if args.ref_model is not None:
+        ref_model = create_ref_model(model_args, finetuning_args)
+        raise NotImplementedError()
+    else:
+        ref_model = None
 
     for split in args.dataset_splits:
         # Load raw data
@@ -212,12 +220,12 @@ def main(args: ScriptArguments):
                     raw_data[i]["rejected_reward"] = rejected_reward
                     raw_data[i]["chosen - rejected"] = chosen_reward - rejected_reward
                 else:
-                    raw_data[i]["harmful_prompts"][j]["chosen_reward"] = chosen_reward
-                    raw_data[i]["harmful_prompts"][j]["rejected_reward"] = rejected_reward
-                    raw_data[i]["harmful_prompts"][j]["chosen - rejected"] = chosen_reward - rejected_reward
+                    raw_data[i]["generated_prompts"][j]["chosen_reward"] = chosen_reward
+                    raw_data[i]["generated_prompts"][j]["rejected_reward"] = rejected_reward
+                    raw_data[i]["generated_prompts"][j]["chosen - rejected"] = chosen_reward - rejected_reward
 
             for i, raw_item in enumerate(raw_data):
-                raw_data[i]["harmful_prompts"] = sorted(raw_item["harmful_prompts"], key=lambda x: x["chosen - rejected"] if "chosen - rejected" in x else -100)
+                raw_data[i]["generated_prompts"] = sorted(raw_item["generated_prompts"], key=lambda x: x["chosen - rejected"] if "chosen - rejected" in x else -100)
             
             save_path = os.path.join(args.save_name, f"{split}.json")
             if not os.path.exists(save_path):
