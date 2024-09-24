@@ -1,7 +1,7 @@
 
 source scripts/.env
 eval "$(conda shell.bash hook)"
-conda activate llama-factory-bk
+conda activate adversarial-llm
 
 data_path=$ADV_DATA_PATH
 model_path=$ADV_MODEL_PATH

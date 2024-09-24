@@ -1,7 +1,7 @@
 
 source scripts/.env
 eval "$(conda shell.bash hook)"
-conda activate llama-factory-bk
+conda activate adversarial-llm
 
 unset OPENAI_CLIENT_CONFIG_PATH
 unset OPENAI_API_BASE

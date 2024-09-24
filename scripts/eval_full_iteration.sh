@@ -1,7 +1,7 @@
 
 source scripts/.env
 eval "$(conda shell.bash hook)"
-conda activate llama-factory-bk
+conda activate adversarial-llm
 
 export CUDA_LAUNCH_BLOCKING=1
 export ACCELERATE_LOG_LEVEL=info
